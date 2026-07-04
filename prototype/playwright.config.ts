@@ -21,7 +21,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "npm run dev",
+    command: "npm run dev:poc",
     url: "http://127.0.0.1:5173",
     reuseExistingServer: true,
     timeout: 15_000,

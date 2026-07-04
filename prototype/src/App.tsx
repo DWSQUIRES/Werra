@@ -1,153 +1,222 @@
 import {
-  ArrowRight,
   Banknote,
   BriefcaseBusiness,
   Check,
-  ChevronRight,
   CircleDollarSign,
   Clock3,
-  Eye,
   FileCheck2,
   Gavel,
   HandCoins,
   LayoutDashboard,
-  Link as LinkIcon,
+  LogOut,
   Plus,
   RefreshCcw,
+  Send,
   ShieldCheck,
   Sparkles,
   Upload,
   UserCheck,
   Users,
   Wallet,
-  X,
 } from "lucide-react";
-import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
-import type { AppState, Bid, BidForm, BriefForm, Creator, Escrow, Gig, Role, Tab } from "./state";
+import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
-  activeCreatorId as managedActiveCreatorId,
-  awardBidState,
-  creators,
-  createBriefState,
-  fundEscrowState,
-  getMetrics as calculateMetrics,
-  initialState as managedInitialState,
-  loadState as loadManagedState,
-  openDisputeState,
-  refundEscrowState,
-  releaseEscrowState,
-  requestRevisionState,
-  storageKey as managedStorageKey,
-  submitBidState,
-  submitDeliveryState,
-} from "./state";
+  awardApiBid,
+  bootstrapPocWallets,
+  createApiBid,
+  createApiBrief,
+  fundUsdwEscrow,
+  getManagedUsers,
+  getMarketplace,
+  getUsdwBalance,
+  issueUsdw,
+  openApiDispute,
+  releaseUsdwEscrow,
+  settleApiDispute,
+  submitApiDelivery,
+  type ApiAgreement,
+  type ApiBid,
+  type ApiBrief,
+  type ApiDelivery,
+  type ApiDispute,
+  type ApiEscrow,
+  type ApiMarketplace,
+  type ApiRole,
+  type ApiUsdwBalance,
+  type ApiUser,
+} from "./api";
+
+type SessionRole = ApiRole;
+type ViewKey =
+  | "overview"
+  | "briefs"
+  | "applications"
+  | "payments"
+  | "opportunities"
+  | "workspace"
+  | "earnings"
+  | "operations"
+  | "support"
+  | "funding";
+
+const sessionKey = "werra-session-email";
+
+const demoAccounts: Record<
+  SessionRole,
+  { email: string; title: string; subtitle: string; defaultView: ViewKey }
+> = {
+  business: {
+    email: "demo-sme@werra.local",
+    title: "SME",
+    subtitle: "Post briefs, select creators, approve payout.",
+    defaultView: "overview",
+  },
+  creator: {
+    email: "demo-creator@werra.local",
+    title: "Creator",
+    subtitle: "Find paid content work, submit delivery, track payout.",
+    defaultView: "opportunities",
+  },
+  admin: {
+    email: "demo-issuer@werra.local",
+    title: "Werra Admin",
+    subtitle: "Monitor payments, support disputes, manage beta balances.",
+    defaultView: "operations",
+  },
+};
+
+const emptyMarket: ApiMarketplace = {
+  briefs: [],
+  bids: [],
+  agreements: [],
+  escrows: [],
+  deliveries: [],
+  disputes: [],
+};
 
 function App() {
-  const [role, setRole] = useState<Role>("business");
-  const [tab, setTab] = useState<Tab>("dashboard");
-  const [selectedGigId, setSelectedGigId] = useState("gig-burger");
-  const [state, setState] = useState<AppState>(() => loadManagedState());
+  const [users, setUsers] = useState<ApiUser[]>([]);
+  const [market, setMarket] = useState<ApiMarketplace>(emptyMarket);
+  const [balances, setBalances] = useState<Record<string, ApiUsdwBalance>>({});
+  const [sessionEmail, setSessionEmail] = useState(() => localStorage.getItem(sessionKey) ?? "");
+  const [view, setView] = useState<ViewKey>("overview");
+  const [notice, setNotice] = useState("Preparing Werra workspace...");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
+
+  const currentUser = users.find((user) => user.email === sessionEmail);
+  const currentRole = currentUser?.role;
+
+  const context = useMemo(() => buildContext(users, market), [users, market]);
+
+  async function refresh(options: { loadBalances?: boolean } = { loadBalances: true }) {
+    const [loadedUsers, loadedMarket] = await Promise.all([getManagedUsers(), getMarketplace()]);
+    setUsers(loadedUsers);
+    setMarket(loadedMarket);
+
+    if (options.loadBalances) {
+      const relevant = loadedUsers.filter((user) =>
+        Object.values(demoAccounts).some((account) => account.email === user.email)
+        || loadedMarket.agreements.some((agreement) => agreement.businessId === user.id || agreement.creatorId === user.id),
+      );
+      const entries = await Promise.all(
+        relevant.map(async (user) => [user.id, await getUsdwBalance(user.id)] as const),
+      );
+      setBalances(Object.fromEntries(entries));
+    }
+  }
+
+  async function boot() {
+    try {
+      setReady(false);
+      await bootstrapPocWallets();
+      await refresh();
+      setNotice("Workspace ready.");
+    } catch (error) {
+      setNotice(humanError(error));
+    } finally {
+      setReady(true);
+    }
+  }
 
   useEffect(() => {
-    localStorage.setItem(managedStorageKey, JSON.stringify(state));
-  }, [state]);
+    void boot();
+  }, []);
 
-  const selectedGig = state.gigs.find((gig) => gig.id === selectedGigId) ?? state.gigs[0];
-  const selectedEscrow = selectedGig
-    ? state.escrows.find((escrow) => escrow.gigId === selectedGig.id)
-    : undefined;
-  const selectedBids = selectedGig
-    ? state.bids.filter((bid) => bid.gigId === selectedGig.id)
-    : [];
-  const metrics = useMemo(() => calculateMetrics(state), [state]);
+  useEffect(() => {
+    if (!currentRole) return;
+    const allowed = navFor(currentRole).map((item) => item.view);
+    if (!allowed.includes(view)) {
+      setView(demoAccounts[currentRole].defaultView);
+    }
+  }, [currentRole, view]);
 
-  function addBrief(form: BriefForm) {
-    const gigId = `gig-${Date.now()}`;
-    setState((current) => createBriefState(current, form, gigId));
-    setSelectedGigId(gigId);
-    setTab("briefs");
+  function login(role: SessionRole) {
+    localStorage.setItem(sessionKey, demoAccounts[role].email);
+    setSessionEmail(demoAccounts[role].email);
+    setView(demoAccounts[role].defaultView);
   }
 
-  function addBid(gigId: string, form: BidForm) {
-    setState((current) => submitBidState(current, gigId, form, `bid-${Date.now()}`, managedActiveCreatorId));
-    setSelectedGigId(gigId);
-    setTab("marketplace");
+  function logout() {
+    localStorage.removeItem(sessionKey);
+    setSessionEmail("");
+    setView("overview");
   }
 
-  function awardBid(bid: Bid) {
-    setState((current) => awardBidState(current, bid.id));
-    setSelectedGigId(bid.gigId);
-    setTab("escrow");
+  async function runAction(label: string, action: () => Promise<void>) {
+    try {
+      setBusy(label);
+      setNotice(label);
+      await action();
+      setNotice("Workspace updated.");
+      return true;
+    } catch (error) {
+      setNotice(humanError(error));
+      return false;
+    } finally {
+      setBusy(null);
+    }
   }
 
-  function fundEscrow(escrowId: string) {
-    setState((current) => fundEscrowState(current, escrowId));
+  if (!currentUser) {
+    return (
+      <LoginScreen
+        ready={ready}
+        notice={notice}
+        users={users}
+        onLogin={login}
+        onRefresh={() => void boot()}
+      />
+    );
   }
 
-  function submitDelivery(gigId: string, deliveryUrl: string, deliveryNote: string) {
-    setState((current) => submitDeliveryState(current, gigId, deliveryUrl, deliveryNote));
-    setTab("workspace");
-  }
-
-  function releaseEscrow(escrowId: string) {
-    setState((current) => releaseEscrowState(current, escrowId));
-  }
-
-  function requestRevision(gigId: string) {
-    setState((current) => requestRevisionState(current, gigId));
-  }
-
-  function openDispute(gigId: string) {
-    setState((current) => openDisputeState(current, gigId));
-    setTab("admin");
-  }
-
-  function refundEscrow(escrowId: string) {
-    setState((current) => refundEscrowState(current, escrowId));
-  }
-
-  function resetPrototype() {
-    localStorage.removeItem(managedStorageKey);
-    setState(managedInitialState);
-    setSelectedGigId("gig-burger");
-    setRole("business");
-    setTab("dashboard");
-  }
-
-  const navItems = getNav(role);
+  const activeRole = currentUser.role;
+  const nav = navFor(activeRole);
+  const balance = balances[currentUser.id];
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
+    <div className="app-shell role-app">
+      <aside className="sidebar clean-sidebar">
         <div className="brand">
           <div className="brand-mark">W</div>
           <div>
             <h1>Werra</h1>
-            <p>Creator escrow desk</p>
+            <p>{demoAccounts[activeRole].title} workspace</p>
           </div>
         </div>
 
-        <div className="role-switcher" aria-label="Role switcher">
-          {(["business", "creator", "admin"] as Role[]).map((item) => (
-            <button
-              key={item}
-              className={role === item ? "active" : ""}
-              onClick={() => {
-                setRole(item);
-                setTab(item === "creator" ? "marketplace" : item === "admin" ? "admin" : "dashboard");
-              }}
-            >
-              {roleLabel(item)}
-            </button>
-          ))}
+        <div className="account-card">
+          <span>Signed in as</span>
+          <strong>{demoAccounts[activeRole].title}</strong>
+          <small>{currentUser.email}</small>
         </div>
 
         <nav>
-          {navItems.map((item) => (
+          {nav.map((item) => (
             <button
-              key={item.tab}
-              className={tab === item.tab ? "nav-item active" : "nav-item"}
-              onClick={() => setTab(item.tab)}
+              key={item.view}
+              className={view === item.view ? "nav-item active" : "nav-item"}
+              onClick={() => setView(item.view)}
             >
               <item.icon size={18} />
               <span>{item.label}</span>
@@ -156,103 +225,74 @@ function App() {
         </nav>
 
         <div className="wallet-panel">
-          <div className="wallet-row" data-testid="business-wallet">
-            <span>Business</span>
-            <strong>{state.wallets.businessUsdi.toFixed(2)} USDI</strong>
+          <div className="wallet-row">
+            <span>Available</span>
+            <strong>{balance ? `${balance.amount} USDW` : "Syncing"}</strong>
           </div>
-          <div className="wallet-row" data-testid="creator-wallet">
-            <span>Creator</span>
-            <strong>{state.wallets.creatorUsdi.toFixed(2)} USDI</strong>
-          </div>
-          <div className="wallet-row" data-testid="werra-wallet">
-            <span>Werra fees</span>
-            <strong>{state.wallets.werraUsdi.toFixed(2)} USDI</strong>
+          <div className="wallet-row">
+            <span>Account</span>
+            <strong>Managed</strong>
           </div>
         </div>
+
+        <button className="secondary-button full" onClick={logout}>
+          <LogOut size={16} />
+          <span>Sign out</span>
+        </button>
       </aside>
 
       <main className="main">
         <header className="topbar">
           <div>
-            <p className="eyebrow">{roleLabel(role)} mode</p>
-            <h2>{pageTitle(tab, role)}</h2>
+            <p className="eyebrow">{demoAccounts[activeRole].title}</p>
+            <h2>{titleFor(view)}</h2>
           </div>
           <div className="topbar-actions">
-            <button className="icon-button" onClick={resetPrototype} title="Reset prototype">
+            <button className="icon-button" onClick={() => void runAction("Refreshing workspace...", () => refresh())} title="Refresh">
               <RefreshCcw size={18} />
-            </button>
-            <button
-              className="primary-button"
-              onClick={() => setTab(role === "creator" ? "marketplace" : "briefs")}
-            >
-              {role === "creator" ? <Sparkles size={18} /> : <Plus size={18} />}
-              <span>{role === "creator" ? "Find gigs" : "New brief"}</span>
             </button>
           </div>
         </header>
 
-        {tab === "dashboard" && (
-          <BusinessDashboard
-            metrics={metrics}
-            state={state}
-            selectedGigId={selectedGigId}
-            onSelectGig={(gigId) => {
-              setSelectedGigId(gigId);
-              setTab("escrow");
-            }}
-            onCreateBrief={() => setTab("briefs")}
+        {notice && <div className="notice-bar">{notice}</div>}
+
+        {activeRole === "business" && (
+          <BusinessWorkspace
+            user={currentUser}
+            context={context}
+            balance={balance}
+            busy={busy}
+            view={view}
+            setView={setView}
+            runAction={runAction}
+            refresh={refresh}
           />
         )}
 
-        {tab === "briefs" && (
-          <BriefsView
-            state={state}
-            selectedGig={selectedGig}
-            selectedBids={selectedBids}
-            onSelectGig={setSelectedGigId}
-            onAddBrief={addBrief}
-            onAwardBid={awardBid}
-          />
-        )}
-
-        {tab === "marketplace" && (
-          <MarketplaceView
-            state={state}
-            activeCreatorId={managedActiveCreatorId}
-            onAddBid={addBid}
-            onSelectGig={setSelectedGigId}
-          />
-        )}
-
-        {tab === "workspace" && (
+        {activeRole === "creator" && (
           <CreatorWorkspace
-            state={state}
-            activeCreatorId={managedActiveCreatorId}
-            onSubmitDelivery={submitDelivery}
+            user={currentUser}
+            context={context}
+            balance={balance}
+            busy={busy}
+            view={view}
+            setView={setView}
+            runAction={runAction}
+            refresh={refresh}
           />
         )}
 
-        {tab === "escrow" && selectedGig && (
-          <EscrowView
-            gig={selectedGig}
-            bids={selectedBids}
-            escrow={selectedEscrow}
-            onFund={fundEscrow}
-            onRelease={releaseEscrow}
-            onRevision={requestRevision}
-            onDispute={openDispute}
-          />
-        )}
-
-        {tab === "admin" && (
-          <AdminView
-            state={state}
-            onRelease={releaseEscrow}
-            onRefund={refundEscrow}
-            onSelectGig={(gigId) => {
-              setSelectedGigId(gigId);
-              setTab("escrow");
-            }}
+        {activeRole === "admin" && (
+          <AdminWorkspace
+            user={currentUser}
+            users={users}
+            context={context}
+            balances={balances}
+            busy={busy}
+            view={view}
+            setView={setView}
+            runAction={runAction}
+            refresh={refresh}
           />
         )}
       </main>
@@ -260,790 +300,916 @@ function App() {
   );
 }
 
-function BusinessDashboard({
-  metrics,
-  state,
-  selectedGigId,
-  onSelectGig,
-  onCreateBrief,
+function LoginScreen({
+  ready,
+  notice,
+  users,
+  onLogin,
+  onRefresh,
 }: {
-  metrics: ReturnType<typeof calculateMetrics>;
-  state: AppState;
-  selectedGigId: string;
-  onSelectGig: (gigId: string) => void;
-  onCreateBrief: () => void;
+  ready: boolean;
+  notice: string;
+  users: ApiUser[];
+  onLogin: (role: SessionRole) => void;
+  onRefresh: () => void;
 }) {
+  return (
+    <main className="login-shell">
+      <section className="login-panel">
+        <div className="brand login-brand">
+          <div className="brand-mark">W</div>
+          <div>
+            <h1>Werra</h1>
+            <p>Creator escrow desk</p>
+          </div>
+        </div>
+
+        <div className="login-grid">
+          {(Object.keys(demoAccounts) as SessionRole[]).map((role) => {
+            const account = demoAccounts[role];
+            const available = users.some((user) => user.email === account.email);
+            return (
+              <button
+                key={role}
+                className="login-card"
+                disabled={!ready || !available}
+                onClick={() => onLogin(role)}
+              >
+                <span>{account.title}</span>
+                <strong>Continue as {account.title}</strong>
+                <small>{account.subtitle}</small>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="login-footer">
+          <span>{notice}</span>
+          <button className="secondary-button" onClick={onRefresh}>
+            <RefreshCcw size={16} />
+            <span>Refresh</span>
+          </button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function BusinessWorkspace(props: WorkspaceProps & { user: ApiUser; balance?: ApiUsdwBalance }) {
+  const { user, context, view, balance, busy, runAction, refresh } = props;
+  const myBriefs = context.briefs.filter((brief) => brief.businessId === user.id);
+  const myAgreements = context.agreements.filter((agreement) => agreement.businessId === user.id);
+  const pendingBids = context.bids.filter((bid) => {
+    const brief = context.briefById.get(bid.briefId);
+    return brief?.businessId === user.id && bid.status === "PENDING";
+  });
+  const reviewReady = myAgreements.filter((agreement) => agreement.status === "DELIVERED");
+  const held = myAgreements
+    .filter((agreement) => agreement.status === "FUNDED" || agreement.status === "DELIVERED")
+    .reduce((sum, agreement) => sum + agreement.grossUsdi, 0);
+
+  if (view === "briefs") {
+    return (
+      <div className="content-grid">
+        <Panel title="Post brief">
+          <BriefForm
+            onSubmit={async (input) => {
+              let created: ApiBrief | undefined;
+              const ok = await runAction("Posting brief...", async () => {
+                created = await createApiBrief({ ...input, businessId: user.id });
+                await refresh();
+              });
+              return ok ? created : undefined;
+            }}
+            busy={Boolean(busy)}
+          />
+        </Panel>
+        <BriefList briefs={myBriefs} context={context} />
+      </div>
+    );
+  }
+
+  if (view === "applications") {
+    return (
+      <div className="content-grid">
+        {pendingBids.length === 0 ? (
+          <EmptyState icon={<Users />} title="No pending applications" text="New creator applications will appear here." />
+        ) : (
+          pendingBids.map((bid) => (
+            <ApplicationCard
+              key={bid.id}
+              bid={bid}
+              context={context}
+              action={
+                <button
+                  className="primary-button"
+                  disabled={Boolean(busy)}
+                  onClick={() =>
+                    runAction("Awarding and funding escrow...", async () => {
+                      try {
+                        await awardApiBid(bid.id, user.id);
+                      } finally {
+                        await refresh();
+                      }
+                    })
+                  }
+                >
+                  <UserCheck size={16} />
+                  <span>Award & fund</span>
+                </button>
+              }
+            />
+          ))
+        )}
+      </div>
+    );
+  }
+
+  if (view === "payments") {
+    return (
+      <AgreementList
+        agreements={myAgreements}
+        context={context}
+        emptyText="Award a creator to fund escrow and start the job."
+        renderActions={(agreement) => (
+          <BusinessPaymentActions
+            agreement={agreement}
+            context={context}
+            user={user}
+            busy={busy}
+            runAction={runAction}
+            refresh={refresh}
+          />
+        )}
+      />
+    );
+  }
+
   return (
     <div className="content-grid">
       <section className="metric-grid">
-        <Metric icon={<BriefcaseBusiness />} label="Active briefs" value={metrics.activeGigs} />
-        <Metric icon={<Users />} label="Creator bids" value={metrics.pendingBids} />
-        <Metric icon={<ShieldCheck />} label="Funded escrow" value={`${metrics.fundedUsdi} USDI`} />
-        <Metric icon={<HandCoins />} label="Released payouts" value={`${metrics.releasedUsdi} USDI`} />
+        <Metric icon={<CircleDollarSign />} label="Balance" value={`${balance?.amount ?? "0"} USDW`} />
+        <Metric icon={<BriefcaseBusiness />} label="Briefs" value={myBriefs.length} />
+        <Metric icon={<Users />} label="Applications" value={pendingBids.length} />
+        <Metric icon={<ShieldCheck />} label="In escrow" value={`${held.toFixed(2)} USDW`} />
       </section>
-
       <section className="two-column">
-        <Panel
-          title="Hiring Pipeline"
-          action={
-            <button className="secondary-button" onClick={onCreateBrief}>
-              <Plus size={16} />
-              <span>Brief</span>
-            </button>
-          }
-        >
-          <div className="pipeline">
-            {state.gigs.map((gig) => {
-              const bidCount = state.bids.filter((bid) => bid.gigId === gig.id).length;
-              return (
-                <button
-                  key={gig.id}
-                  className={gig.id === selectedGigId ? "pipeline-item selected" : "pipeline-item"}
-                  onClick={() => onSelectGig(gig.id)}
-                >
-                  <div>
-                    <StatusBadge status={gig.status} />
-                    <h3>{gig.title}</h3>
-                    <p>{gig.businessName} · {gig.platform} · {bidCount} bids</p>
-                  </div>
-                  <ChevronRight size={18} />
-                </button>
-              );
-            })}
-          </div>
+        <Panel title="Review queue">
+          {reviewReady.length === 0 ? (
+            <EmptyState icon={<Clock3 />} title="No deliveries waiting" text="Approved work will move to payout from here." />
+          ) : (
+            reviewReady.map((agreement) => (
+              <AgreementSummary key={agreement.id} agreement={agreement} context={context} />
+            ))
+          )}
         </Panel>
-
-        <Panel title="Escrow Timeline">
-          <div className="timeline">
-            <TimelineItem icon={<FileCheck2 />} title="Brief accepted" text="Creator and business terms are hashed before funding." />
-            <TimelineItem icon={<Wallet />} title="USDI locked" text="Funding creates a mock CKB escrow cell in this prototype." />
-            <TimelineItem icon={<Upload />} title="Creator delivery" text="Delivery link, note, and review status are tracked against the gig." />
-            <TimelineItem icon={<Banknote />} title="Payout released" text="Approval creates a mock release transaction and updates balances." />
-          </div>
+        <Panel title="Recent briefs">
+          <BriefList briefs={myBriefs.slice(0, 4)} context={context} compact />
         </Panel>
       </section>
     </div>
   );
 }
 
-function BriefsView({
-  state,
-  selectedGig,
-  selectedBids,
-  onSelectGig,
-  onAddBrief,
-  onAwardBid,
-}: {
-  state: AppState;
-  selectedGig?: Gig;
-  selectedBids: Bid[];
-  onSelectGig: (gigId: string) => void;
-  onAddBrief: (form: BriefForm) => void;
-  onAwardBid: (bid: Bid) => void;
-}) {
+function CreatorWorkspace(props: WorkspaceProps & { user: ApiUser; balance?: ApiUsdwBalance }) {
+  const { user, context, view, balance, busy, runAction, refresh, setView } = props;
+  const openBriefs = context.briefs.filter((brief) => brief.status === "OPEN");
+  const myBids = context.bids.filter((bid) => bid.creatorId === user.id);
+  const myAgreements = context.agreements.filter((agreement) => agreement.creatorId === user.id);
+  const readyToSubmit = myAgreements.filter(
+    (agreement) => agreement.status === "FUNDED" && !context.deliveryByAgreement.has(agreement.id),
+  );
+  const readyIds = new Set(readyToSubmit.map((agreement) => agreement.id));
+  const paid = myAgreements
+    .filter((agreement) => agreement.status === "RELEASED")
+    .reduce((sum, agreement) => sum + agreement.creatorPayoutUsdi, 0);
+
+  if (view === "workspace") {
+    return (
+      <div className="content-grid">
+        {readyToSubmit.length > 0 && (
+          <Panel title="Ready to submit">
+            <div className="content-grid">
+              {readyToSubmit.map((agreement) => (
+                <CreatorWorkCard
+                  key={agreement.id}
+                  agreement={agreement}
+                  context={context}
+                  user={user}
+                  busy={busy}
+                  runAction={runAction}
+                  refresh={refresh}
+                />
+              ))}
+            </div>
+          </Panel>
+        )}
+
+        <AgreementList
+          agreements={myAgreements.filter((agreement) => !readyIds.has(agreement.id))}
+          context={context}
+          emptyText="Accepted work appears here after an SME awards your application."
+          renderActions={(agreement) => (
+            <CreatorDeliveryActions
+              agreement={agreement}
+              context={context}
+              user={user}
+              busy={busy}
+              runAction={runAction}
+              refresh={refresh}
+            />
+          )}
+        />
+      </div>
+    );
+  }
+
+  if (view === "earnings") {
+    return (
+      <div className="content-grid">
+        <section className="metric-grid">
+          <Metric icon={<CircleDollarSign />} label="Available" value={`${balance?.amount ?? "0"} USDW`} />
+          <Metric icon={<HandCoins />} label="Paid out" value={`${paid.toFixed(2)} USDW`} />
+          <Metric icon={<BriefcaseBusiness />} label="Active work" value={myAgreements.filter((a) => a.status !== "RELEASED").length} />
+          <Metric icon={<Check />} label="Completed" value={myAgreements.filter((a) => a.status === "RELEASED").length} />
+        </section>
+        <AgreementList agreements={myAgreements} context={context} emptyText="No earnings yet." />
+      </div>
+    );
+  }
+
   return (
     <div className="content-grid">
-      <section className="two-column wide-left">
-        <Panel title="Post Content Brief">
-          <BriefForm onSubmit={onAddBrief} />
-        </Panel>
-
-        <Panel title="Briefs">
-          <div className="brief-list">
-            {state.gigs.map((gig) => (
-              <button
-                key={gig.id}
-                className={selectedGig?.id === gig.id ? "brief-row selected" : "brief-row"}
-                onClick={() => onSelectGig(gig.id)}
-              >
-                <div>
-                  <StatusBadge status={gig.status} />
-                  <h3>{gig.title}</h3>
-                  <p>{gig.contentType} · {gig.budgetUsdi} USDI · {gig.deadline}</p>
-                </div>
-                <ChevronRight size={18} />
-              </button>
-            ))}
+      {readyToSubmit.length > 0 && (
+        <Panel
+          title="Ready to deliver"
+          action={
+            <button className="secondary-button" onClick={() => setView("workspace")}>
+              <Upload size={16} />
+              <span>Go to submit work</span>
+            </button>
+          }
+        >
+          <div className="submit-work-prompt">
+            <Upload size={22} />
+            <div>
+              <h3>{readyToSubmit.length} funded job ready</h3>
+              <p>Submit the completed content link from the Submit Work section so the SME can review and approve payout.</p>
+            </div>
           </div>
         </Panel>
-      </section>
+      )}
 
-      {selectedGig && (
-        <section className="two-column wide-right">
-          <Panel title="Selected Brief">
-            <GigSummary gig={selectedGig} />
-          </Panel>
-
-          <Panel title="Creator Applications">
-            {selectedBids.length === 0 ? (
-              <EmptyState
-                icon={<Users />}
-                title="No applications yet"
-                text="Creators will appear here after they bid on this brief."
-              />
-            ) : (
-              <div className="bid-stack">
-                {selectedBids.map((bid) => (
-                  <BidCard key={bid.id} bid={bid} onAward={() => onAwardBid(bid)} />
-                ))}
-              </div>
-            )}
-          </Panel>
-        </section>
+      {openBriefs.length === 0 ? (
+        <EmptyState icon={<Sparkles />} title="No open briefs" text="New SME briefs will appear here." />
+      ) : (
+        openBriefs.map((brief) => {
+          const existingBid = myBids.find((bid) => bid.briefId === brief.id);
+          return (
+            <Panel key={brief.id} title={brief.title}>
+              <BriefDetails brief={brief} />
+              {existingBid ? (
+                <div className="notice success">
+                  <Check size={18} />
+                  <span>Application submitted: {statusLabel(existingBid.status)}</span>
+                </div>
+              ) : (
+                <BidForm
+                  brief={brief}
+                  busy={Boolean(busy)}
+                  onSubmit={(input) =>
+                    runAction("Submitting application...", async () => {
+                      await createApiBid(brief.id, { ...input, creatorId: user.id });
+                      await refresh();
+                    })
+                  }
+                />
+              )}
+            </Panel>
+          );
+        })
       )}
     </div>
   );
 }
 
-function MarketplaceView({
-  state,
-  activeCreatorId,
-  onAddBid,
-  onSelectGig,
-}: {
-  state: AppState;
-  activeCreatorId: string;
-  onAddBid: (gigId: string, form: BidForm) => void;
-  onSelectGig: (gigId: string) => void;
-}) {
-  const openGigs = state.gigs.filter((gig) => gig.status === "OPEN");
-  const activeCreator = creators.find((creator) => creator.id === activeCreatorId)!;
+function AdminWorkspace(props: WorkspaceProps & { user: ApiUser; users: ApiUser[]; balances: Record<string, ApiUsdwBalance> }) {
+  const { user, users, context, balances, view, busy, runAction, refresh } = props;
+  const business = users.find((user) => user.email === demoAccounts.business.email);
+  const creator = users.find((user) => user.email === demoAccounts.creator.email);
+  const issuer = users.find((user) => user.email === demoAccounts.admin.email);
+  const disputes = context.disputes.filter((dispute) => dispute.status === "OPEN");
+  const inEscrow = context.agreements
+    .filter((agreement) => agreement.status === "FUNDED" || agreement.status === "DELIVERED")
+    .reduce((sum, agreement) => sum + agreement.grossUsdi, 0);
 
-  return (
-    <div className="content-grid">
-      <section className="creator-strip">
-        <CreatorCard creator={activeCreator} compact={false} />
-        <div className="creator-stats">
-          <Metric icon={<Eye />} label="Avg views" value={activeCreator.avgViews} />
-          <Metric icon={<UserCheck />} label="Completed" value={activeCreator.completed} />
-          <Metric icon={<CircleDollarSign />} label="Base rate" value={`${activeCreator.rate} USDI`} />
-        </div>
-      </section>
-
-      <section className="gig-market">
-        {openGigs.map((gig) => {
-          const hasBid = state.bids.some(
-            (bid) => bid.gigId === gig.id && bid.creatorId === activeCreatorId,
-          );
-
-          return (
-            <Panel key={gig.id} title={gig.title}>
-              <div className="market-card">
-                <GigSummary gig={gig} />
-                {hasBid ? (
-                  <div className="notice success">
-                    <Check size={18} />
-                    <span>Your application is waiting for SME review.</span>
-                  </div>
-                ) : (
-                  <BidFormPanel
-                    gig={gig}
-                    creator={activeCreator}
-                    onSubmit={(form) => {
-                      onAddBid(gig.id, form);
-                      onSelectGig(gig.id);
-                    }}
-                  />
-                )}
+  if (view === "support") {
+    return (
+      <div className="content-grid">
+        {disputes.length === 0 ? (
+          <EmptyState icon={<Gavel />} title="No open disputes" text="Support cases opened by SMEs will appear here." />
+        ) : (
+          disputes.map((dispute) => (
+            <Panel key={dispute.id} title="Dispute review">
+              <DisputeDetails dispute={dispute} context={context} />
+              <div className="button-row">
+                <button
+                  className="primary-button"
+                  disabled={Boolean(busy)}
+                  onClick={() =>
+                    runAction("Settling dispute...", async () => {
+                      await settleApiDispute(dispute.id, { adminId: user.id, decision: "release" });
+                      await refresh();
+                    })
+                  }
+                >
+                  <HandCoins size={16} />
+                  <span>Pay creator</span>
+                </button>
+                <button
+                  className="danger-button"
+                  disabled={Boolean(busy)}
+                  onClick={() =>
+                    runAction("Settling dispute...", async () => {
+                      await settleApiDispute(dispute.id, { adminId: user.id, decision: "refund" });
+                      await refresh();
+                    })
+                  }
+                >
+                  <RefreshCcw size={16} />
+                  <span>Refund SME</span>
+                </button>
               </div>
             </Panel>
-          );
-        })}
-      </section>
-    </div>
-  );
-}
-
-function CreatorWorkspace({
-  state,
-  activeCreatorId,
-  onSubmitDelivery,
-}: {
-  state: AppState;
-  activeCreatorId: string;
-  onSubmitDelivery: (gigId: string, deliveryUrl: string, deliveryNote: string) => void;
-}) {
-  const selectedGigs = state.gigs.filter((gig) => gig.selectedCreatorId === activeCreatorId);
-
-  return (
-    <div className="content-grid">
-      <section className="section-header">
-        <div>
-          <p className="eyebrow">Creator workspace</p>
-          <h3>Awarded gigs and delivery queue</h3>
-        </div>
-      </section>
-
-      <div className="workspace-grid">
-        {selectedGigs.length === 0 ? (
-          <EmptyState
-            icon={<BriefcaseBusiness />}
-            title="No awarded gigs yet"
-            text="Apply to open briefs from the creator marketplace."
-          />
-        ) : (
-          selectedGigs.map((gig) => {
-            const escrow = state.escrows.find((item) => item.gigId === gig.id);
-            return (
-              <Panel key={gig.id} title={gig.title}>
-                <GigSummary gig={gig} />
-                {escrow && <EscrowMini escrow={escrow} />}
-                {gig.status === "FUNDED" || gig.status === "REVISION_REQUESTED" ? (
-                  <DeliveryForm gig={gig} onSubmit={onSubmitDelivery} />
-                ) : gig.deliveryUrl ? (
-                  <div className="delivery-card">
-                    <div>
-                      <p className="eyebrow">Submitted content</p>
-                      <h3>{gig.deliveryUrl}</h3>
-                      <p>{gig.deliveryNote}</p>
-                    </div>
-                    <StatusBadge status={gig.status} />
-                  </div>
-                ) : (
-                  <div className="notice">
-                    <Clock3 size={18} />
-                    <span>Waiting for escrow funding before work starts.</span>
-                  </div>
-                )}
-              </Panel>
-            );
-          })
+          ))
         )}
       </div>
-    </div>
-  );
-}
+    );
+  }
 
-function EscrowView({
-  gig,
-  bids,
-  escrow,
-  onFund,
-  onRelease,
-  onRevision,
-  onDispute,
-}: {
-  gig: Gig;
-  bids: Bid[];
-  escrow?: Escrow;
-  onFund: (escrowId: string) => void;
-  onRelease: (escrowId: string) => void;
-  onRevision: (gigId: string) => void;
-  onDispute: (gigId: string) => void;
-}) {
-  const selectedBid = bids.find((bid) => bid.status === "SELECTED");
-  const creator = gig.selectedCreatorId
-    ? creators.find((item) => item.id === gig.selectedCreatorId)
-    : undefined;
-
-  return (
-    <div className="content-grid">
-      <section className="two-column wide-left">
-        <Panel title="Agreement">
-          <GigSummary gig={gig} />
-          {creator && (
-            <div className="selected-creator">
-              <CreatorCard creator={creator} compact />
-              {selectedBid && (
-                <div className="agreement-terms">
-                  <div>
-                    <span>Accepted bid</span>
-                    <strong>{selectedBid.amountUsdi} USDI</strong>
-                  </div>
-                  <div>
-                    <span>Timeline</span>
-                    <strong>{selectedBid.timeline}</strong>
-                  </div>
-                </div>
-              )}
+  if (view === "funding") {
+    return (
+      <div className="content-grid">
+        <section className="metric-grid">
+          <Metric icon={<CircleDollarSign />} label="SME balance" value={`${business ? balances[business.id]?.amount ?? "0" : "0"} USDW`} />
+          <Metric icon={<HandCoins />} label="Creator balance" value={`${creator ? balances[creator.id]?.amount ?? "0" : "0"} USDW`} />
+          <Metric icon={<Banknote />} label="Werra fees" value={`${issuer ? balances[issuer.id]?.amount ?? "0" : "0"} USDW`} />
+          <Metric icon={<ShieldCheck />} label="Protected" value={`${inEscrow.toFixed(2)} USDW`} />
+        </section>
+        <Panel title="Test balances">
+          <div className="action-row">
+            <div>
+              <h3>Top up SME test balance</h3>
+              <p className="muted">Adds spendable USDW to the demo SME account for marketplace testing.</p>
             </div>
-          )}
-        </Panel>
-
-        <Panel title="Delivery Review">
-          {gig.deliveryUrl ? (
-            <div className="review-box">
-              <div className="delivery-link">
-                <LinkIcon size={18} />
-                <div>
-                  <span>Delivery link</span>
-                  <strong>{gig.deliveryUrl}</strong>
-                </div>
-              </div>
-              <p>{gig.deliveryNote}</p>
-              <div className="button-row">
-                {escrow && gig.status === "DELIVERED" && (
-                  <button className="primary-button" onClick={() => onRelease(escrow.id)}>
-                    <HandCoins size={18} />
-                    <span>Approve payout</span>
-                  </button>
-                )}
-                {gig.status === "DELIVERED" && (
-                  <button className="secondary-button" onClick={() => onRevision(gig.id)}>
-                    <RefreshCcw size={16} />
-                    <span>Revision</span>
-                  </button>
-                )}
-                {gig.status === "DELIVERED" && (
-                  <button className="danger-button" onClick={() => onDispute(gig.id)}>
-                    <Gavel size={16} />
-                    <span>Dispute</span>
-                  </button>
-                )}
-              </div>
-            </div>
-          ) : (
-            <EmptyState
-              icon={<Upload />}
-              title="No delivery submitted"
-              text="Creator delivery will appear here after escrow is funded and work is submitted."
-            />
-          )}
-        </Panel>
-      </section>
-
-      <Panel title="CKB Escrow Simulation">
-        {escrow ? (
-          <div className="escrow-detail">
-            <StatusBadge status={escrow.status} />
-            <div className="escrow-amount">
-              <span>Locked amount</span>
-              <strong>{escrow.grossUsdi.toFixed(2)} USDI</strong>
-            </div>
-            <div className="escrow-breakdown">
-              <div>
-                <span>Creator payout</span>
-                <strong>{escrow.creatorPayoutUsdi.toFixed(2)} USDI</strong>
-              </div>
-              <div>
-                <span>Werra fee</span>
-                <strong>{escrow.platformFeeUsdi.toFixed(2)} USDI</strong>
-              </div>
-            </div>
-            <HashBlock label="Agreement ID" value={escrow.agreementId} />
-            <HashBlock label="Terms hash" value={escrow.termsHash} />
-            <HashBlock label="Escrow cell" value={escrow.escrowCell} />
-            {escrow.fundingTxHash && <HashBlock label="Funding tx" value={escrow.fundingTxHash} />}
-            {escrow.releaseTxHash && <HashBlock label="Release tx" value={escrow.releaseTxHash} />}
-            {escrow.refundTxHash && <HashBlock label="Refund tx" value={escrow.refundTxHash} />}
-
-            {escrow.status === "DRAFT" && (
-              <button className="primary-button full" onClick={() => onFund(escrow.id)}>
-                <Wallet size={18} />
-                <span>Fund escrow</span>
-              </button>
-            )}
-
-            {escrow.status === "FUNDED" && gig.status !== "DELIVERED" && (
-              <div className="notice success">
-                <ShieldCheck size={18} />
-                <span>USDI is locked. Creator can submit delivery.</span>
-              </div>
-            )}
+            <button
+              className="primary-button"
+              disabled={Boolean(busy) || !business}
+              onClick={() =>
+                runAction("Adding SME test balance...", async () => {
+                  if (!business) return;
+                  await issueUsdw(business.id, "1000");
+                  await refresh();
+                })
+              }
+            >
+              <Plus size={16} />
+              <span>Add 1000 USDW</span>
+            </button>
           </div>
-        ) : (
-          <EmptyState
-            icon={<ShieldCheck />}
-            title="No escrow yet"
-            text="Award a creator application to generate agreement terms and a mock CKB escrow cell."
-          />
-        )}
-      </Panel>
-    </div>
-  );
-}
-
-function AdminView({
-  state,
-  onRelease,
-  onRefund,
-  onSelectGig,
-}: {
-  state: AppState;
-  onRelease: (escrowId: string) => void;
-  onRefund: (escrowId: string) => void;
-  onSelectGig: (gigId: string) => void;
-}) {
-  return (
-    <div className="content-grid">
-      <section className="section-header">
-        <div>
-          <p className="eyebrow">Ops console</p>
-          <h3>Escrow monitor and dispute queue</h3>
-        </div>
-      </section>
-
-      <div className="admin-table">
-        <div className="admin-head">
-          <span>Agreement</span>
-          <span>Gig</span>
-          <span>Status</span>
-          <span>Amount</span>
-          <span>Actions</span>
-        </div>
-        {state.escrows.map((escrow) => {
-          const gig = state.gigs.find((item) => item.id === escrow.gigId);
-          return (
-            <div className="admin-row" key={escrow.id}>
-              <div>
-                <strong>{escrow.agreementId}</strong>
-                <small>{shortHash(escrow.termsHash)}</small>
-              </div>
-              <button className="link-button" onClick={() => onSelectGig(escrow.gigId)}>
-                {gig?.title ?? escrow.gigId}
-              </button>
-              <StatusBadge status={escrow.status} />
-              <strong>{escrow.grossUsdi.toFixed(2)} USDI</strong>
-              <div className="button-row compact">
-                {escrow.status === "DISPUTED" && (
-                  <>
-                    <button className="secondary-button" onClick={() => onRelease(escrow.id)}>
-                      <Check size={15} />
-                      <span>Creator</span>
-                    </button>
-                    <button className="danger-button" onClick={() => onRefund(escrow.id)}>
-                      <X size={15} />
-                      <span>Refund</span>
-                    </button>
-                  </>
-                )}
-                {escrow.status !== "DISPUTED" && (
-                  <span className="muted">No action</span>
-                )}
-              </div>
-            </div>
-          );
-        })}
+        </Panel>
       </div>
-    </div>
-  );
-}
-
-function BriefForm({ onSubmit }: { onSubmit: (form: BriefForm) => void }) {
-  const [form, setForm] = useState<BriefForm>({
-    title: "",
-    category: "Food and restaurants",
-    objective: "",
-    contentType: "Creator posted TikTok",
-    deliverables: "1 video, 30-60 seconds",
-    location: "Nairobi",
-    platform: "TikTok",
-    usageRights: "Organic reposting for 30 days",
-    revisionCount: 1,
-    budgetUsdi: 120,
-    deadline: "2026-07-15",
-  });
-
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    if (!form.title.trim() || !form.objective.trim()) return;
-    onSubmit(form);
-    setForm((current) => ({ ...current, title: "", objective: "" }));
+    );
   }
 
   return (
-    <form className="form-grid" onSubmit={submit}>
-      <label>
-        Brief title
-        <input
-          value={form.title}
-          onChange={(event) => setForm({ ...form, title: event.target.value })}
-          placeholder="UGC video for skincare launch"
-        />
-      </label>
-      <label>
-        Objective
-        <textarea
-          value={form.objective}
-          onChange={(event) => setForm({ ...form, objective: event.target.value })}
-          placeholder="Generate product awareness and drive WhatsApp orders."
-        />
-      </label>
-      <div className="form-row">
-        <label>
-          Category
-          <select
-            value={form.category}
-            onChange={(event) => setForm({ ...form, category: event.target.value })}
-          >
-            <option>Food and restaurants</option>
-            <option>Fashion and beauty</option>
-            <option>Events and nightlife</option>
-            <option>Fitness and wellness</option>
-            <option>Online shops</option>
-            <option>Local experiences</option>
-          </select>
-        </label>
-        <label>
-          Content type
-          <select
-            value={form.contentType}
-            onChange={(event) => setForm({ ...form, contentType: event.target.value })}
-          >
-            <option>Creator posted TikTok</option>
-            <option>Instagram Reel + Story</option>
-            <option>UGC video delivered to business</option>
-            <option>Creator location visit</option>
-            <option>Product review video</option>
-          </select>
-        </label>
-      </div>
-      <label>
-        Deliverables
-        <input
-          value={form.deliverables}
-          onChange={(event) => setForm({ ...form, deliverables: event.target.value })}
-        />
-      </label>
-      <div className="form-row">
-        <label>
-          Budget USDI
-          <input
-            type="number"
-            min="20"
-            value={form.budgetUsdi}
-            onChange={(event) => setForm({ ...form, budgetUsdi: Number(event.target.value) })}
-          />
-        </label>
-        <label>
-          Deadline
-          <input
-            type="date"
-            value={form.deadline}
-            onChange={(event) => setForm({ ...form, deadline: event.target.value })}
-          />
-        </label>
-      </div>
-      <div className="form-row">
-        <label>
-          Platform
-          <select
-            value={form.platform}
-            onChange={(event) => setForm({ ...form, platform: event.target.value })}
-          >
-            <option>TikTok</option>
-            <option>Instagram</option>
-            <option>YouTube Shorts</option>
-          </select>
-        </label>
-        <label>
-          Revisions
-          <input
-            type="number"
-            min="0"
-            max="3"
-            value={form.revisionCount}
-            onChange={(event) => setForm({ ...form, revisionCount: Number(event.target.value) })}
-          />
-        </label>
-      </div>
-      <label>
-        Usage rights
-        <input
-          value={form.usageRights}
-          onChange={(event) => setForm({ ...form, usageRights: event.target.value })}
-        />
-      </label>
-      <button className="primary-button full" type="submit">
-        <Plus size={18} />
-        <span>Post brief</span>
+    <div className="content-grid">
+      <section className="metric-grid">
+        <Metric icon={<BriefcaseBusiness />} label="Briefs" value={context.briefs.length} />
+        <Metric icon={<ShieldCheck />} label="Active escrows" value={context.agreements.filter((a) => a.status === "FUNDED").length} />
+        <Metric icon={<Upload />} label="In review" value={context.agreements.filter((a) => a.status === "DELIVERED").length} />
+        <Metric icon={<Gavel />} label="Disputes" value={disputes.length} />
+      </section>
+      <AgreementList agreements={context.agreements} context={context} emptyText="No marketplace agreements yet." />
+    </div>
+  );
+}
+
+function BusinessPaymentActions({
+  agreement,
+  context,
+  user,
+  busy,
+  runAction,
+  refresh,
+}: ActionProps & { agreement: ApiAgreement; user: ApiUser }) {
+  const delivery = context.deliveryByAgreement.get(agreement.id);
+
+  if (agreement.status === "DRAFT") {
+    return (
+      <button
+        className="primary-button"
+        disabled={Boolean(busy)}
+        onClick={() =>
+          runAction("Funding escrow...", async () => {
+            await fundUsdwEscrow(agreement.id, user.id);
+            await refresh();
+          })
+        }
+      >
+        <Wallet size={16} />
+        <span>Complete funding</span>
       </button>
+    );
+  }
+
+  if (agreement.status === "DELIVERED" && delivery) {
+    return (
+      <div className="button-row">
+        <button
+          className="primary-button"
+          disabled={Boolean(busy)}
+          onClick={() =>
+            runAction("Approving payout...", async () => {
+              await releaseUsdwEscrow(agreement.id, user.id);
+              await refresh();
+            })
+          }
+        >
+          <HandCoins size={16} />
+          <span>Approve payout</span>
+        </button>
+        <button
+          className="danger-button"
+          disabled={Boolean(busy)}
+          onClick={() =>
+            runAction("Opening support case...", async () => {
+              await openApiDispute(agreement.id, {
+                openedBy: user.id,
+                reason: "Delivery needs Werra support review.",
+              });
+              await refresh();
+            })
+          }
+        >
+          <Gavel size={16} />
+          <span>Open dispute</span>
+        </button>
+      </div>
+    );
+  }
+
+  return <StatusBadge status={agreement.status} />;
+}
+
+function CreatorWorkCard({
+  agreement,
+  context,
+  user,
+  busy,
+  runAction,
+  refresh,
+}: ActionProps & { agreement: ApiAgreement; user: ApiUser }) {
+  const brief = context.briefById.get(agreement.briefId);
+
+  return (
+    <article className="submit-work-card">
+      <div className="submit-work-heading">
+        <div>
+          <span>Completed content</span>
+          <h3>{brief?.title ?? "Accepted work"}</h3>
+          <p>Add the live content link or delivery file link. The SME will review it before payout is released.</p>
+        </div>
+        <StatusBadge status={agreement.status} />
+      </div>
+      <AgreementSummary agreement={agreement} context={context} />
+      <CreatorDeliveryActions
+        agreement={agreement}
+        context={context}
+        user={user}
+        busy={busy}
+        runAction={runAction}
+        refresh={refresh}
+      />
+    </article>
+  );
+}
+
+function CreatorDeliveryActions({
+  agreement,
+  context,
+  user,
+  busy,
+  runAction,
+  refresh,
+}: ActionProps & { agreement: ApiAgreement; user: ApiUser }) {
+  const delivery = context.deliveryByAgreement.get(agreement.id);
+
+  if (delivery) {
+    return (
+      <div className="delivery-link">
+        <Upload size={18} />
+        <div>
+          <span>Delivery submitted</span>
+          <strong>{delivery.url}</strong>
+        </div>
+      </div>
+    );
+  }
+
+  if (agreement.status !== "FUNDED") {
+    return <StatusBadge status={agreement.status} />;
+  }
+
+  return (
+    <DeliveryForm
+      busy={Boolean(busy)}
+      onSubmit={(input) =>
+        runAction("Submitting delivery...", async () => {
+          await submitApiDelivery(agreement.id, { ...input, creatorId: user.id });
+          await refresh();
+        })
+      }
+    />
+  );
+}
+
+function BriefForm({
+  onSubmit,
+  busy,
+}: {
+  onSubmit: (input: Omit<ApiBrief, "id" | "businessId" | "status" | "createdAt">) => Promise<ApiBrief | undefined>;
+  busy: boolean;
+}) {
+  const defaultForm = {
+    title: "Nairobi lunch offer creator video",
+    objective: "Drive store visits from nearby customers this week.",
+    deliverables: "1 TikTok video, 1 Instagram Reel, delivery link",
+    category: "Food and restaurants",
+    contentType: "Creator posted short video",
+    location: "Nairobi, Kenya",
+    platform: "TikTok + Instagram",
+    usageRights: "Organic reposting for 30 days",
+    revisionCount: 1,
+    budgetUsdi: 120,
+    deadline: "2026-08-15",
+  };
+  const [form, setForm] = useState(defaultForm);
+  const [postedBrief, setPostedBrief] = useState<ApiBrief | undefined>();
+  const [posting, setPosting] = useState(false);
+  const submitLock = useRef(false);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+
+    if (busy || posting || postedBrief || submitLock.current) {
+      return;
+    }
+
+    submitLock.current = true;
+    setPosting(true);
+    let created: ApiBrief | undefined;
+
+    try {
+      created = await onSubmit(form);
+
+      if (created) {
+        setPostedBrief(created);
+      }
+    } finally {
+      if (!created) {
+        submitLock.current = false;
+      }
+      setPosting(false);
+    }
+  }
+
+  function startAnotherBrief() {
+    submitLock.current = false;
+    setPostedBrief(undefined);
+    setForm({
+      ...defaultForm,
+      title: "",
+      objective: "",
+      deliverables: "",
+    });
+  }
+
+  if (postedBrief) {
+    return (
+      <div className="posted-brief-card" role="status" aria-live="polite">
+        <div className="posted-brief-heading">
+          <Check size={20} />
+          <div>
+            <h3>Brief posted</h3>
+            <p>{postedBrief.title} is live for creator applications.</p>
+          </div>
+        </div>
+        <div className="summary-grid">
+          <SummaryItem label="Budget" value={`${postedBrief.budgetUsdi.toFixed(2)} USDW`} />
+          <SummaryItem label="Deadline" value={postedBrief.deadline} />
+          <SummaryItem label="Status" value={statusLabel(postedBrief.status)} />
+        </div>
+        <button className="secondary-button" type="button" onClick={startAnotherBrief}>
+          <Plus size={16} />
+          <span>Post another brief</span>
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <form className="stack-form" onSubmit={submit} aria-busy={posting}>
+      <fieldset className="form-fields" disabled={busy || posting}>
+        <label>
+          Brief title
+          <input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
+        </label>
+        <label>
+          Goal
+          <textarea value={form.objective} onChange={(event) => setForm({ ...form, objective: event.target.value })} />
+        </label>
+        <label>
+          Deliverables
+          <input value={form.deliverables} onChange={(event) => setForm({ ...form, deliverables: event.target.value })} />
+        </label>
+        <div className="form-row">
+          <label>
+            Budget
+            <input
+              type="number"
+              min="20"
+              value={form.budgetUsdi}
+              onChange={(event) => setForm({ ...form, budgetUsdi: Number(event.target.value) })}
+            />
+          </label>
+          <label>
+            Deadline
+            <input type="date" value={form.deadline} onChange={(event) => setForm({ ...form, deadline: event.target.value })} />
+          </label>
+        </div>
+        {posting && (
+          <div className="form-status" role="status" aria-live="polite">
+            <RefreshCcw size={16} />
+            <span>Posting brief...</span>
+          </div>
+        )}
+        <button className="primary-button full" type="submit" disabled={busy || posting}>
+          {posting ? <RefreshCcw size={18} /> : <Plus size={18} />}
+          <span>{posting ? "Posting..." : "Post brief"}</span>
+        </button>
+      </fieldset>
     </form>
   );
 }
 
-function BidFormPanel({
-  gig,
-  creator,
+function BidForm({
+  brief,
   onSubmit,
+  busy,
 }: {
-  gig: Gig;
-  creator: Creator;
-  onSubmit: (form: BidForm) => void;
+  brief: ApiBrief;
+  onSubmit: (input: Omit<ApiBid, "id" | "briefId" | "status" | "createdAt">) => void;
+  busy: boolean;
 }) {
-  const [form, setForm] = useState<BidForm>({
-    amountUsdi: Math.min(creator.rate, gig.budgetUsdi),
-    timeline: "3 days",
-    pitch: "",
-    sample: creator.samples[0],
-  });
+  const [amountUsdi, setAmountUsdi] = useState(Math.min(brief.budgetUsdi, 110));
+  const [timeline, setTimeline] = useState("3 days after escrow funding");
+  const [pitch, setPitch] = useState("I can create a location-first short video with a clear customer offer.");
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (!form.pitch.trim()) return;
-    onSubmit(form);
-    setForm((current) => ({ ...current, pitch: "" }));
+    onSubmit({
+      creatorId: "",
+      amountUsdi,
+      timeline,
+      pitch,
+      sample: "https://tiktok.com/@werra-demo/video/sample",
+    });
   }
 
   return (
-    <form className="bid-form" onSubmit={submit}>
+    <form className="stack-form compact-form" onSubmit={submit}>
       <div className="form-row">
         <label>
-          Bid USDI
-          <input
-            type="number"
-            min="20"
-            value={form.amountUsdi}
-            onChange={(event) => setForm({ ...form, amountUsdi: Number(event.target.value) })}
-          />
+          Your rate
+          <input type="number" min="20" value={amountUsdi} onChange={(event) => setAmountUsdi(Number(event.target.value))} />
         </label>
         <label>
           Timeline
-          <input
-            value={form.timeline}
-            onChange={(event) => setForm({ ...form, timeline: event.target.value })}
-          />
+          <input value={timeline} onChange={(event) => setTimeline(event.target.value)} />
         </label>
       </div>
       <label>
         Pitch
-        <textarea
-          value={form.pitch}
-          onChange={(event) => setForm({ ...form, pitch: event.target.value })}
-          placeholder="Explain the content angle and how you will deliver it."
-        />
+        <textarea value={pitch} onChange={(event) => setPitch(event.target.value)} />
       </label>
-      <label>
-        Relevant sample
-        <select
-          value={form.sample}
-          onChange={(event) => setForm({ ...form, sample: event.target.value })}
-        >
-          {creator.samples.map((sample) => (
-            <option key={sample}>{sample}</option>
-          ))}
-        </select>
-      </label>
-      <button className="primary-button full" type="submit">
-        <ArrowRight size={18} />
-        <span>Submit bid</span>
+      <button className="primary-button full" type="submit" disabled={busy}>
+        <Send size={16} />
+        <span>Apply</span>
       </button>
     </form>
   );
 }
 
 function DeliveryForm({
-  gig,
   onSubmit,
+  busy,
 }: {
-  gig: Gig;
-  onSubmit: (gigId: string, deliveryUrl: string, deliveryNote: string) => void;
+  onSubmit: (input: { url: string; note: string }) => void;
+  busy: boolean;
 }) {
-  const [url, setUrl] = useState(gig.deliveryUrl ?? "https://tiktok.com/@aminaeats/video/demo");
-  const [note, setNote] = useState(
-    gig.deliveryNote ?? "Posted with location tag, lunch offer CTA, and pinned business comment.",
-  );
+  const [url, setUrl] = useState("https://tiktok.com/@werra-demo/video/delivery");
+  const [note, setNote] = useState("Posted with offer CTA and business location tag.");
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    onSubmit(gig.id, url, note);
+    onSubmit({ url, note });
   }
 
   return (
-    <form className="delivery-form" onSubmit={submit}>
+    <form className="stack-form compact-form" onSubmit={submit}>
       <label>
         Delivery link
         <input value={url} onChange={(event) => setUrl(event.target.value)} />
       </label>
       <label>
-        Delivery note
+        Note
         <textarea value={note} onChange={(event) => setNote(event.target.value)} />
       </label>
-      <button className="primary-button full" type="submit">
-        <Upload size={18} />
-        <span>Submit delivery</span>
+      <button className="primary-button full" type="submit" disabled={busy}>
+        <Upload size={16} />
+        <span>Submit completed work</span>
       </button>
     </form>
   );
 }
 
-function BidCard({ bid, onAward }: { bid: Bid; onAward: () => void }) {
-  const creator = creators.find((item) => item.id === bid.creatorId)!;
-  return (
-    <article className="bid-card">
-      <div className="bid-card-top">
-        <CreatorCard creator={creator} compact />
-        <StatusBadge status={bid.status} />
-      </div>
-      <p>{bid.pitch}</p>
-      <div className="bid-meta">
-        <span>{bid.amountUsdi} USDI</span>
-        <span>{bid.timeline}</span>
-        <span>{bid.sample}</span>
-      </div>
-      {bid.status === "PENDING" && (
-        <button className="primary-button" onClick={onAward}>
-          <ShieldCheck size={18} />
-          <span>Award and draft escrow</span>
-        </button>
-      )}
-    </article>
-  );
-}
-
-function CreatorCard({ creator, compact }: { creator: Creator; compact: boolean }) {
-  return (
-    <article className={compact ? "creator-card compact" : "creator-card"}>
-      <div className="avatar">{initials(creator.name)}</div>
-      <div>
-        <div className="creator-name">
-          <h3>{creator.name}</h3>
-          <span>{creator.verified}</span>
-        </div>
-        <p>{creator.handle} · {creator.niche}</p>
-        {!compact && (
-          <div className="creator-metrics">
-            <span>{creator.followers} followers</span>
-            <span>{creator.engagement}</span>
-            <span>{creator.audience}</span>
-          </div>
-        )}
-      </div>
-    </article>
-  );
-}
-
-function GigSummary({ gig }: { gig: Gig }) {
-  return (
-    <div className="gig-summary">
-      <div className="summary-title">
-        <StatusBadge status={gig.status} />
-        <h3>{gig.title}</h3>
-      </div>
-      <p>{gig.objective}</p>
-      <div className="summary-grid">
-        <SummaryItem label="Deliverables" value={gig.deliverables} />
-        <SummaryItem label="Content type" value={gig.contentType} />
-        <SummaryItem label="Budget" value={`${gig.budgetUsdi} USDI · KES ${gig.kesEstimate.toLocaleString()}`} />
-        <SummaryItem label="Deadline" value={gig.deadline} />
-        <SummaryItem label="Location" value={gig.location} />
-        <SummaryItem label="Usage rights" value={gig.usageRights} />
-      </div>
-    </div>
-  );
-}
-
-function EscrowMini({ escrow }: { escrow: Escrow }) {
-  return (
-    <div className="escrow-mini">
-      <ShieldCheck size={18} />
-      <div>
-        <span>{escrow.agreementId}</span>
-        <strong>{escrow.grossUsdi.toFixed(2)} USDI · {escrow.status}</strong>
-      </div>
-    </div>
-  );
-}
-
-function Panel({
-  title,
-  action,
-  children,
+function AgreementList({
+  agreements,
+  context,
+  emptyText,
+  renderActions,
 }: {
-  title: string;
-  action?: ReactNode;
-  children: ReactNode;
+  agreements: ApiAgreement[];
+  context: AppContext;
+  emptyText: string;
+  renderActions?: (agreement: ApiAgreement) => ReactNode;
 }) {
+  if (agreements.length === 0) {
+    return <EmptyState icon={<ShieldCheck />} title="Nothing here yet" text={emptyText} />;
+  }
+
+  return (
+    <div className="content-grid">
+      {agreements.map((agreement) => (
+        <Panel
+          key={agreement.id}
+          title={context.briefById.get(agreement.briefId)?.title ?? "Agreement"}
+          action={<StatusBadge status={agreement.status} />}
+        >
+          <AgreementSummary agreement={agreement} context={context} />
+          {renderActions?.(agreement)}
+        </Panel>
+      ))}
+    </div>
+  );
+}
+
+function AgreementSummary({ agreement, context }: { agreement: ApiAgreement; context: AppContext }) {
+  const brief = context.briefById.get(agreement.briefId);
+  const delivery = context.deliveryByAgreement.get(agreement.id);
+
+  return (
+    <div className="agreement-card">
+      {brief && <BriefDetails brief={brief} compact />}
+      <div className="summary-grid">
+        <SummaryItem label="Escrowed" value={`${agreement.grossUsdi.toFixed(2)} USDW`} />
+        <SummaryItem label="Creator payout" value={`${agreement.creatorPayoutUsdi.toFixed(2)} USDW`} />
+        <SummaryItem label="Werra fee" value={`${agreement.platformFeeUsdi.toFixed(2)} USDW`} />
+        <SummaryItem label="Status" value={statusLabel(agreement.status)} />
+      </div>
+      {delivery && (
+        <div className="delivery-link">
+          <Upload size={18} />
+          <div>
+            <span>Delivery</span>
+            <strong>{delivery.url}</strong>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ApplicationCard({
+  bid,
+  context,
+  action,
+}: {
+  bid: ApiBid;
+  context: AppContext;
+  action: ReactNode;
+}) {
+  const brief = context.briefById.get(bid.briefId);
+  const creator = context.userById.get(bid.creatorId);
+
+  return (
+    <Panel title={brief?.title ?? "Application"} action={<StatusBadge status={bid.status} />}>
+      <div className="application-card">
+        <div>
+          <h3>{displayName(creator)}</h3>
+          <p>{bid.pitch}</p>
+        </div>
+        <div className="summary-grid">
+          <SummaryItem label="Rate" value={`${bid.amountUsdi.toFixed(2)} USDW`} />
+          <SummaryItem label="Timeline" value={bid.timeline} />
+          <SummaryItem label="Brief" value={brief?.platform ?? "Content"} />
+        </div>
+        {action}
+      </div>
+    </Panel>
+  );
+}
+
+function BriefList({ briefs, context, compact }: { briefs: ApiBrief[]; context: AppContext; compact?: boolean }) {
+  if (briefs.length === 0) {
+    return <EmptyState icon={<BriefcaseBusiness />} title="No briefs yet" text="Post a brief to start receiving creator applications." />;
+  }
+
+  return (
+    <div className="brief-list">
+      {briefs.map((brief) => {
+        const bidCount = context.bids.filter((bid) => bid.briefId === brief.id).length;
+        return (
+          <article key={brief.id} className="brief-row static-row">
+            <div>
+              <StatusBadge status={brief.status} />
+              <h3>{brief.title}</h3>
+              <p>{brief.platform} · {brief.budgetUsdi.toFixed(2)} USDW · {bidCount} applications</p>
+              {!compact && <p>{brief.objective}</p>}
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function BriefDetails({ brief, compact }: { brief: ApiBrief; compact?: boolean }) {
+  return (
+    <div className="brief-details">
+      <div className="summary-title">
+        <StatusBadge status={brief.status} />
+        <h3>{brief.title}</h3>
+      </div>
+      {!compact && <p>{brief.objective}</p>}
+      <div className="summary-grid">
+        <SummaryItem label="Budget" value={`${brief.budgetUsdi.toFixed(2)} USDW`} />
+        <SummaryItem label="Deadline" value={brief.deadline} />
+        <SummaryItem label="Platform" value={brief.platform} />
+        <SummaryItem label="Deliverables" value={brief.deliverables} />
+      </div>
+    </div>
+  );
+}
+
+function DisputeDetails({ dispute, context }: { dispute: ApiDispute; context: AppContext }) {
+  const agreement = context.agreementById.get(dispute.agreementId);
+  const brief = agreement ? context.briefById.get(agreement.briefId) : undefined;
+  const business = agreement ? context.userById.get(agreement.businessId) : undefined;
+  const creator = agreement ? context.userById.get(agreement.creatorId) : undefined;
+  const delivery = context.deliveryByAgreement.get(dispute.agreementId);
+
+  return (
+    <div className="agreement-card">
+      <div className="summary-title">
+        <StatusBadge status={dispute.status} />
+        <h3>{brief?.title ?? "Disputed agreement"}</h3>
+      </div>
+      <p>{dispute.reason}</p>
+      {agreement && (
+        <div className="summary-grid">
+          <SummaryItem label="Amount" value={`${agreement.grossUsdi.toFixed(2)} USDW`} />
+          <SummaryItem label="Creator payout" value={`${agreement.creatorPayoutUsdi.toFixed(2)} USDW`} />
+          <SummaryItem label="SME" value={displayName(business)} />
+          <SummaryItem label="Creator" value={displayName(creator)} />
+          <SummaryItem label="Opened" value={new Date(dispute.createdAt).toLocaleDateString()} />
+        </div>
+      )}
+      {delivery && (
+        <div className="delivery-note">
+          <span>Submitted work</span>
+          <a href={delivery.url} target="_blank" rel="noreferrer">
+            {delivery.url}
+          </a>
+          <p>{delivery.note}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Panel({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   return (
     <section className="panel">
       <div className="panel-header">
@@ -1067,18 +1233,6 @@ function Metric({ icon, label, value }: { icon: ReactNode; label: string; value:
   );
 }
 
-function TimelineItem({ icon, title, text }: { icon: ReactNode; title: string; text: string }) {
-  return (
-    <div className="timeline-item">
-      <div className="timeline-icon">{icon}</div>
-      <div>
-        <h3>{title}</h3>
-        <p>{text}</p>
-      </div>
-    </div>
-  );
-}
-
 function EmptyState({ icon, title, text }: { icon: ReactNode; title: string; text: string }) {
   return (
     <div className="empty-state">
@@ -1098,69 +1252,124 @@ function SummaryItem({ label, value }: { label: string; value: string }) {
   );
 }
 
-function HashBlock({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="hash-block">
-      <span>{label}</span>
-      <code>{value}</code>
-    </div>
-  );
-}
-
 function StatusBadge({ status }: { status: string }) {
-  return <span className={`status ${status.toLowerCase()}`}>{status.replace(/_/g, " ")}</span>;
+  return <span className={`status ${status.toLowerCase()}`}>{statusLabel(status)}</span>;
 }
 
-function getNav(role: Role): { tab: Tab; label: string; icon: typeof LayoutDashboard }[] {
-  if (role === "creator") {
+function buildContext(users: ApiUser[], market: ApiMarketplace): AppContext {
+  return {
+    ...market,
+    userById: new Map(users.map((user) => [user.id, user])),
+    briefById: new Map(market.briefs.map((brief) => [brief.id, brief])),
+    agreementById: new Map(market.agreements.map((agreement) => [agreement.id, agreement])),
+    escrowByAgreement: new Map(market.escrows.map((escrow) => [escrow.agreementId, escrow])),
+    deliveryByAgreement: new Map(market.deliveries.map((delivery) => [delivery.agreementId, delivery])),
+  };
+}
+
+function navFor(role: SessionRole) {
+  if (role === "business") {
     return [
-      { tab: "marketplace", label: "Marketplace", icon: Sparkles },
-      { tab: "workspace", label: "Workspace", icon: Upload },
-      { tab: "escrow", label: "Escrow", icon: ShieldCheck },
+      { view: "overview" as const, label: "Overview", icon: LayoutDashboard },
+      { view: "briefs" as const, label: "Post Brief", icon: Plus },
+      { view: "applications" as const, label: "Applications", icon: Users },
+      { view: "payments" as const, label: "Payments", icon: ShieldCheck },
     ];
   }
 
-  if (role === "admin") {
+  if (role === "creator") {
     return [
-      { tab: "admin", label: "Escrow monitor", icon: Gavel },
-      { tab: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-      { tab: "escrow", label: "Agreement", icon: ShieldCheck },
+      { view: "opportunities" as const, label: "Find Work", icon: Sparkles },
+      { view: "workspace" as const, label: "Submit Work", icon: Upload },
+      { view: "earnings" as const, label: "Earnings", icon: CircleDollarSign },
     ];
   }
 
   return [
-    { tab: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-    { tab: "briefs", label: "Briefs", icon: BriefcaseBusiness },
-    { tab: "escrow", label: "Escrow", icon: ShieldCheck },
+    { view: "operations" as const, label: "Overview", icon: LayoutDashboard },
+    { view: "support" as const, label: "Support", icon: Gavel },
+    { view: "funding" as const, label: "Balances", icon: Banknote },
   ];
 }
 
-function pageTitle(tab: Tab, role: Role) {
-  if (tab === "dashboard") return "Marketplace dashboard";
-  if (tab === "briefs") return "Brief builder";
-  if (tab === "marketplace") return "Open content briefs";
-  if (tab === "workspace") return "Creator workspace";
-  if (tab === "escrow") return "Agreement and escrow";
-  if (tab === "admin") return "Operations console";
-  return roleLabel(role);
+function titleFor(view: ViewKey) {
+  const titles: Record<ViewKey, string> = {
+    overview: "Marketplace overview",
+    briefs: "Post a brief",
+    applications: "Creator applications",
+    payments: "Escrowed payments",
+    opportunities: "Open briefs",
+    workspace: "Submit completed work",
+    earnings: "Earnings",
+    operations: "Operations overview",
+    support: "Support queue",
+    funding: "Beta balances",
+  };
+  return titles[view];
 }
 
-function roleLabel(role: Role) {
-  if (role === "business") return "SME";
-  if (role === "creator") return "Creator";
-  return "Admin";
+function statusLabel(status: string) {
+  const labels: Record<string, string> = {
+    OPEN: "Open",
+    AWARDED: "Awarded",
+    PENDING: "Pending",
+    SELECTED: "Selected",
+    DECLINED: "Declined",
+    DRAFT: "Funding needed",
+    FUNDED: "In escrow",
+    DELIVERED: "In review",
+    RELEASED: "Paid",
+    DISPUTED: "In support",
+    REFUNDED: "Refunded",
+    OPEN_DISPUTE: "Open",
+  };
+  return labels[status] ?? status.replace(/_/g, " ").toLowerCase();
 }
 
-function initials(name: string) {
-  return name
-    .split(" ")
-    .map((part) => part[0])
-    .join("")
-    .slice(0, 2);
+function displayName(user?: ApiUser) {
+  if (!user) return "Creator";
+  if (user.email === demoAccounts.creator.email) return "Demo Creator";
+  if (user.email === demoAccounts.business.email) return "Demo SME";
+  if (user.email === demoAccounts.admin.email) return "Werra Admin";
+  return user.email.split("@")[0];
 }
 
-function shortHash(hash: string) {
-  return `${hash.slice(0, 8)}...${hash.slice(-6)}`;
+function humanError(error: unknown) {
+  const message = error instanceof Error ? error.message : "Something went wrong.";
+  if (/Insufficient CKB/i.test(message)) {
+    return "A test funding wallet needs more network balance before this payment can be sent.";
+  }
+  if (/Insufficient USDW|Insufficient coin/i.test(message)) {
+    return "The SME needs more USDW before this escrow can be funded.";
+  }
+  if (/already bid/i.test(message)) {
+    return "You have already applied to this brief.";
+  }
+  return message;
 }
+
+type AppContext = ApiMarketplace & {
+  userById: Map<string, ApiUser>;
+  briefById: Map<string, ApiBrief>;
+  agreementById: Map<string, ApiAgreement>;
+  escrowByAgreement: Map<string, ApiEscrow>;
+  deliveryByAgreement: Map<string, ApiDelivery>;
+};
+
+type WorkspaceProps = {
+  context: AppContext;
+  busy: string | null;
+  view: ViewKey;
+  setView: (view: ViewKey) => void;
+  runAction: (label: string, action: () => Promise<void>) => Promise<boolean>;
+  refresh: () => Promise<void>;
+};
+
+type ActionProps = {
+  context: AppContext;
+  busy: string | null;
+  runAction: (label: string, action: () => Promise<void>) => Promise<boolean>;
+  refresh: () => Promise<void>;
+};
 
 export default App;

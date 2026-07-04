@@ -3,6 +3,8 @@ dist
 test-results
 playwright-report
 brain/
+Brain/
+BRAIN/
 *.tsbuildinfo
 vite.config.js
 vite.config.d.ts

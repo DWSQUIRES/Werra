@@ -131,7 +131,7 @@ function App() {
       setReady(false);
       await bootstrapPocWallets();
       await refresh();
-      setNotice("Workspace ready.");
+      setNotice("");
     } catch (error) {
       setNotice(humanError(error));
     } finally {
@@ -198,11 +198,7 @@ function App() {
     <div className="app-shell role-app">
       <aside className="sidebar clean-sidebar">
         <div className="brand">
-          <div className="brand-mark">W</div>
-          <div>
-            <h1>Werra</h1>
-            <p>{demoAccounts[activeRole].title} workspace</p>
-          </div>
+          <h1 className="brand-wordmark">werra</h1>
         </div>
 
         <div className="account-card">
@@ -317,11 +313,7 @@ function LoginScreen({
     <main className="login-shell">
       <section className="login-panel">
         <div className="brand login-brand">
-          <div className="brand-mark">W</div>
-          <div>
-            <h1>Werra</h1>
-            <p>Creator escrow desk</p>
-          </div>
+          <h1 className="brand-wordmark">werra</h1>
         </div>
 
         <div className="login-grid">
@@ -343,8 +335,8 @@ function LoginScreen({
           })}
         </div>
 
-        <div className="login-footer">
-          <span>{notice}</span>
+        <div className={`login-footer ${notice ? "" : "empty"}`}>
+          {notice && <span>{notice}</span>}
           <button className="secondary-button" onClick={onRefresh}>
             <RefreshCcw size={16} />
             <span>Refresh</span>
@@ -357,12 +349,14 @@ function LoginScreen({
 
 function BusinessWorkspace(props: WorkspaceProps & { user: ApiUser; balance?: ApiUsdwBalance }) {
   const { user, context, view, balance, busy, runAction, refresh } = props;
-  const myBriefs = context.briefs.filter((brief) => brief.businessId === user.id);
-  const myAgreements = context.agreements.filter((agreement) => agreement.businessId === user.id);
-  const pendingBids = context.bids.filter((bid) => {
-    const brief = context.briefById.get(bid.briefId);
-    return brief?.businessId === user.id && bid.status === "PENDING";
-  });
+  const myBriefs = newestFirst(context.briefs.filter((brief) => brief.businessId === user.id));
+  const myAgreements = newestFirst(context.agreements.filter((agreement) => agreement.businessId === user.id), "updatedAt");
+  const pendingBids = newestFirst(
+    context.bids.filter((bid) => {
+      const brief = context.briefById.get(bid.briefId);
+      return brief?.businessId === user.id && bid.status === "PENDING";
+    }),
+  );
   const reviewReady = myAgreements.filter((agreement) => agreement.status === "DELIVERED");
   const held = myAgreements
     .filter((agreement) => agreement.status === "FUNDED" || agreement.status === "DELIVERED")
@@ -463,7 +457,7 @@ function BusinessWorkspace(props: WorkspaceProps & { user: ApiUser; balance?: Ap
             ))
           )}
         </Panel>
-        <Panel title="Recent briefs">
+        <Panel title="Latest briefs">
           <BriefList briefs={myBriefs.slice(0, 4)} context={context} compact />
         </Panel>
       </section>
@@ -473,9 +467,9 @@ function BusinessWorkspace(props: WorkspaceProps & { user: ApiUser; balance?: Ap
 
 function CreatorWorkspace(props: WorkspaceProps & { user: ApiUser; balance?: ApiUsdwBalance }) {
   const { user, context, view, balance, busy, runAction, refresh, setView } = props;
-  const openBriefs = context.briefs.filter((brief) => brief.status === "OPEN");
-  const myBids = context.bids.filter((bid) => bid.creatorId === user.id);
-  const myAgreements = context.agreements.filter((agreement) => agreement.creatorId === user.id);
+  const openBriefs = newestFirst(context.briefs.filter((brief) => brief.status === "OPEN"));
+  const myBids = newestFirst(context.bids.filter((bid) => bid.creatorId === user.id));
+  const myAgreements = newestFirst(context.agreements.filter((agreement) => agreement.creatorId === user.id), "updatedAt");
   const readyToSubmit = myAgreements.filter(
     (agreement) => agreement.status === "FUNDED" && !context.deliveryByAgreement.has(agreement.id),
   );
@@ -488,7 +482,7 @@ function CreatorWorkspace(props: WorkspaceProps & { user: ApiUser; balance?: Api
     return (
       <div className="content-grid">
         {readyToSubmit.length > 0 && (
-          <Panel title="Ready to submit">
+        <Panel title="Latest work to submit">
             <div className="content-grid">
               {readyToSubmit.map((agreement) => (
                 <CreatorWorkCard
@@ -542,7 +536,7 @@ function CreatorWorkspace(props: WorkspaceProps & { user: ApiUser; balance?: Api
     <div className="content-grid">
       {readyToSubmit.length > 0 && (
         <Panel
-          title="Ready to deliver"
+          title="Latest ready to deliver"
           action={
             <button className="secondary-button" onClick={() => setView("workspace")}>
               <Upload size={16} />
@@ -598,8 +592,9 @@ function AdminWorkspace(props: WorkspaceProps & { user: ApiUser; users: ApiUser[
   const business = users.find((user) => user.email === demoAccounts.business.email);
   const creator = users.find((user) => user.email === demoAccounts.creator.email);
   const issuer = users.find((user) => user.email === demoAccounts.admin.email);
-  const disputes = context.disputes.filter((dispute) => dispute.status === "OPEN");
-  const inEscrow = context.agreements
+  const disputes = newestFirst(context.disputes.filter((dispute) => dispute.status === "OPEN"));
+  const agreements = newestFirst(context.agreements, "updatedAt");
+  const inEscrow = agreements
     .filter((agreement) => agreement.status === "FUNDED" || agreement.status === "DELIVERED")
     .reduce((sum, agreement) => sum + agreement.grossUsdi, 0);
 
@@ -690,7 +685,7 @@ function AdminWorkspace(props: WorkspaceProps & { user: ApiUser; users: ApiUser[
         <Metric icon={<Upload />} label="In review" value={context.agreements.filter((a) => a.status === "DELIVERED").length} />
         <Metric icon={<Gavel />} label="Disputes" value={disputes.length} />
       </section>
-      <AgreementList agreements={context.agreements} context={context} emptyText="No marketplace agreements yet." />
+      <AgreementList agreements={agreements} context={context} emptyText="No marketplace agreements yet." />
     </div>
   );
 }
@@ -1061,7 +1056,7 @@ function AgreementList({
 
   return (
     <div className="content-grid">
-      {agreements.map((agreement) => (
+      {newestFirst(agreements, "updatedAt").map((agreement) => (
         <Panel
           key={agreement.id}
           title={context.briefById.get(agreement.briefId)?.title ?? "Agreement"}
@@ -1138,7 +1133,7 @@ function BriefList({ briefs, context, compact }: { briefs: ApiBrief[]; context: 
 
   return (
     <div className="brief-list">
-      {briefs.map((brief) => {
+      {newestFirst(briefs).map((brief) => {
         const bidCount = context.bids.filter((bid) => bid.briefId === brief.id).length;
         return (
           <article key={brief.id} className="brief-row static-row">
@@ -1265,6 +1260,14 @@ function buildContext(users: ApiUser[], market: ApiMarketplace): AppContext {
     escrowByAgreement: new Map(market.escrows.map((escrow) => [escrow.agreementId, escrow])),
     deliveryByAgreement: new Map(market.deliveries.map((delivery) => [delivery.agreementId, delivery])),
   };
+}
+
+function newestFirst<T extends { createdAt: string }>(items: T[], key: keyof T = "createdAt") {
+  return [...items].sort((left, right) => {
+    const leftDate = new Date(String(left[key])).getTime();
+    const rightDate = new Date(String(right[key])).getTime();
+    return rightDate - leftDate;
+  });
 }
 
 function navFor(role: SessionRole) {

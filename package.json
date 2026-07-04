@@ -1,0 +1,8 @@
+{
+  "name": "werra",
+  "private": true,
+  "scripts": {
+    "preview": "npm --prefix prototype run preview:poc",
+    "preview:reset": "npm --prefix prototype run preview:poc:reset"
+  }
+}

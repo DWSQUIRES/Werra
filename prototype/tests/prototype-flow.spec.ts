@@ -239,7 +239,7 @@ test("creator can submit completed work for a funded job", async ({ page }) => {
   await page.evaluate(() => localStorage.clear());
   await page.goto("/");
   await page.getByRole("button", { name: /Continue as Creator/ }).click();
-  await expect(page.getByText("Ready to deliver")).toBeVisible();
+  await expect(page.getByText("Latest ready to deliver")).toBeVisible();
   await page.getByRole("button", { name: "Go to submit work" }).click();
   await expect(page.getByRole("heading", { name: "Funded creator delivery job" }).first()).toBeVisible();
   await page.getByRole("button", { name: "Submit completed work" }).click();

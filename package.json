@@ -2,7 +2,9 @@
   "name": "werra",
   "private": true,
   "scripts": {
+    "build": "npm --prefix prototype run build",
     "preview": "npm --prefix prototype run preview:poc",
-    "preview:reset": "npm --prefix prototype run preview:poc:reset"
+    "preview:reset": "npm --prefix prototype run preview:poc:reset",
+    "test": "npm --prefix prototype run test"
   }
 }

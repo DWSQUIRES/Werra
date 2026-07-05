@@ -56,6 +56,31 @@ To reset the local POC store and generate a clean demo state:
 npm run preview:reset
 ```
 
+## Vercel Hobby deployment
+
+This repo is ready to deploy as a Vercel Hobby POC preview.
+
+Use the repo root as the Vercel project root. The deployment settings are already captured in `vercel.json`:
+
+- Framework Preset: `Other`
+- Install Command: `npm --prefix prototype ci`
+- Build Command: `npm --prefix prototype run build`
+- Output Directory: `prototype/dist`
+- API: `api/[...path].ts`
+
+Recommended Vercel environment variables:
+
+```text
+CKB_NETWORK=testnet
+WERRA_WALLET_ENCRYPTION_KEY=<long random secret>
+```
+
+`CKB_RPC_URL` is optional. Set it only if you want to use a specific CKB testnet RPC endpoint.
+
+The hosted Vercel deployment uses Vercel serverless functions and stores POC state under `/tmp`. That is enough for a community UI preview, but it is not durable storage. For the full CKB-funded test flow, use the local one-command preview because the local store keeps the generated test wallets on the tester's machine.
+
+If you still want to run a funded hosted test, open the deployed app once, then check `/api/poc/wallets` on the same deployment to view the generated testnet addresses. Fund only with CKB testnet funds.
+
 ## Notes
 
 - The POC uses CKB testnet and a local JSON store under `prototype/.werra-poc`.

@@ -1,58 +1,72 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+const sessionKey = "werra-session-email";
+
+async function signIn(page: Page, role: "business" | "creator", email: string) {
+  let preparedUserId = "";
+
+  await page.route(
+    "**/api/poc/prepare-test-funds",
+    async (route) => {
+      const body = route.request().postDataJSON();
+      preparedUserId = body.userId;
+      await route.fulfill({
+        status: 201,
+        json: {
+          ckb: { txHash: "0xckb", fundedWallets: 2, targetAmount: "500" },
+          usdw: [{ userId: body.userId, txHash: "0xusdw", issued: true, issuedAmount: "1000", targetAmount: "1000" }],
+        },
+      });
+    },
+    { times: 1 },
+  );
+
+  await page.getByLabel("Email").fill(email);
+  await page.getByRole("button", { name: role === "business" ? /SME/ : /Creator/ }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByText("Workspace ready.")).toBeVisible();
+
+  return preparedUserId;
+}
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
-  await page.evaluate(() => localStorage.clear());
+  await page.evaluate((key) => localStorage.removeItem(key), sessionKey);
   await page.reload();
-  await expect(page.getByRole("button", { name: /Continue as SME/ })).toBeVisible();
+  await expect(page.getByText("Sign in with email")).toBeVisible();
+});
+
+test("email sign-in creates a managed user and prepares that user's test wallet", async ({ page }) => {
+  const email = `sme-${Date.now()}@example.com`;
+  const preparedUserId = await signIn(page, "business", email);
+
+  await expect(page.getByText(email)).toBeVisible();
+  expect(preparedUserId).toMatch(/^usr_/);
 });
 
 test("each role only sees its own workspace", async ({ page }) => {
-  await page.getByRole("button", { name: /Continue as SME/ }).click();
+  await signIn(page, "business", `sme-role-${Date.now()}@example.com`);
   await expect(page.getByRole("button", { name: "Post Brief" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Find Work" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Support" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Balances" })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Sign out" }).click();
-  await page.getByRole("button", { name: /Continue as Creator/ }).click();
+  await signIn(page, "creator", `creator-role-${Date.now()}@example.com`);
   await expect(page.getByRole("button", { name: "Find Work" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Post Brief" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Support" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Balances" })).toHaveCount(0);
-
-  await page.getByRole("button", { name: "Sign out" }).click();
-  await page.getByRole("button", { name: /Continue as Werra Admin/ }).click();
-  await expect(page.getByRole("button", { name: "Support" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Balances" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Post Brief" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Find Work" })).toHaveCount(0);
-});
-
-test("public tester can prepare funded wallets before choosing a role", async ({ page }) => {
-  let prepared = false;
-
-  await page.route("**/api/poc/prepare-test-funds", async (route) => {
-    prepared = true;
-    await route.fulfill({
-      status: 201,
-      json: {
-        ckb: { txHash: "0xckb", fundedWallets: 4, targetAmount: "500" },
-        usdw: [
-          { account: "business", txHash: "0xbusiness", issued: true, issuedAmount: "1000", targetAmount: "1000" },
-          { account: "creator", txHash: "0xcreator", issued: true, issuedAmount: "1000", targetAmount: "1000" },
-        ],
-      },
-    });
-  });
-
-  await page.getByRole("button", { name: "Prepare test wallets" }).click();
-  await expect.poll(() => prepared).toBe(true);
-  await expect(page.getByText("Workspace updated.")).toBeVisible();
 });
 
 test("SME posts a brief, creator applies, and SME awards the creator", async ({ page }) => {
-  const title = `Playwright content brief ${Date.now()}`;
+  const stamp = Date.now();
+  const businessEmail = `sme-flow-${stamp}@example.com`;
+  const creatorEmail = `creator-flow-${stamp}@example.com`;
+  const creatorName = creatorEmail.split("@")[0];
+  const title = `Playwright content brief ${stamp}`;
 
-  await page.getByRole("button", { name: /Continue as SME/ }).click();
+  await signIn(page, "business", businessEmail);
   await page.getByRole("button", { name: "Post Brief" }).click();
   await page.getByLabel("Brief title").fill(title);
   await page.getByLabel("Goal").fill("Bring new lunch customers into the restaurant this week.");
@@ -65,17 +79,17 @@ test("SME posts a brief, creator applies, and SME awards the creator", async ({ 
   await expect(page.getByText("Workspace updated.")).toBeVisible();
 
   await page.getByRole("button", { name: "Sign out" }).click();
-  await page.getByRole("button", { name: /Continue as Creator/ }).click();
+  await signIn(page, "creator", creatorEmail);
   const briefPanel = page.locator(".panel").filter({ hasText: title });
   await expect(briefPanel).toHaveCount(1);
   await briefPanel.getByRole("button", { name: "Apply" }).click();
   await expect(page.getByText("Workspace updated.")).toBeVisible();
 
   await page.getByRole("button", { name: "Sign out" }).click();
-  await page.getByRole("button", { name: /Continue as SME/ }).click();
+  await signIn(page, "business", businessEmail);
   await page.getByRole("button", { name: "Applications" }).click();
   const application = page.locator(".panel").filter({ hasText: title });
-  await expect(application).toContainText("Demo Creator");
+  await expect(application).toContainText(creatorName);
   await page.route("**/api/bids/*/award", async (route) => {
     await route.fulfill({
       status: 201,
@@ -116,23 +130,23 @@ test("creator can submit completed work for a funded job", async ({ page }) => {
   const users = [
     {
       id: "usr-sme",
-      email: "demo-sme@werra.local",
+      email: "sme-funded@example.com",
       role: "business",
       wallet: { address: "ckt1sme", publicKey: "0x", lockScript: {}, createdAt: "2026-07-03T00:00:00.000Z" },
       createdAt: "2026-07-03T00:00:00.000Z",
     },
     {
       id: "usr-creator",
-      email: "demo-creator@werra.local",
+      email: "creator-funded@example.com",
       role: "creator",
       wallet: { address: "ckt1creator", publicKey: "0x", lockScript: {}, createdAt: "2026-07-03T00:00:00.000Z" },
       createdAt: "2026-07-03T00:00:00.000Z",
     },
     {
-      id: "usr-admin",
+      id: "usr-issuer",
       email: "demo-issuer@werra.local",
       role: "admin",
-      wallet: { address: "ckt1admin", publicKey: "0x", lockScript: {}, createdAt: "2026-07-03T00:00:00.000Z" },
+      wallet: { address: "ckt1issuer", publicKey: "0x", lockScript: {}, createdAt: "2026-07-03T00:00:00.000Z" },
       createdAt: "2026-07-03T00:00:00.000Z",
     },
   ];
@@ -141,8 +155,6 @@ test("creator can submit completed work for a funded job", async ({ page }) => {
     await route.fulfill({
       json: {
         wallets: {
-          business: { label: "Demo SME", user: users[0] },
-          creator: { label: "Demo Creator", user: users[1] },
           issuer: { label: "USDW issuer", user: users[2] },
           escrow: null,
         },
@@ -259,163 +271,14 @@ test("creator can submit completed work for a funded job", async ({ page }) => {
     });
   });
 
-  await page.evaluate(() => localStorage.clear());
+  await page.evaluate(
+    ({ key, email }) => localStorage.setItem(key, email),
+    { key: sessionKey, email: users[1].email },
+  );
   await page.goto("/");
-  await page.getByRole("button", { name: /Continue as Creator/ }).click();
   await expect(page.getByText("Latest ready to deliver")).toBeVisible();
   await page.getByRole("button", { name: "Go to submit work" }).click();
   await expect(page.getByRole("heading", { name: "Funded creator delivery job" }).first()).toBeVisible();
   await page.getByRole("button", { name: "Submit completed work" }).click();
   await expect(page.getByText("Delivery submitted")).toBeVisible();
-});
-
-test("admin can settle an open dispute in the support queue", async ({ page }) => {
-  let resolved = false;
-  const users = [
-    {
-      id: "usr-sme",
-      email: "demo-sme@werra.local",
-      role: "business",
-      wallet: { address: "ckt1sme", publicKey: "0x", lockScript: {}, createdAt: "2026-07-03T00:00:00.000Z" },
-      createdAt: "2026-07-03T00:00:00.000Z",
-    },
-    {
-      id: "usr-creator",
-      email: "demo-creator@werra.local",
-      role: "creator",
-      wallet: { address: "ckt1creator", publicKey: "0x", lockScript: {}, createdAt: "2026-07-03T00:00:00.000Z" },
-      createdAt: "2026-07-03T00:00:00.000Z",
-    },
-    {
-      id: "usr-admin",
-      email: "demo-issuer@werra.local",
-      role: "admin",
-      wallet: { address: "ckt1admin", publicKey: "0x", lockScript: {}, createdAt: "2026-07-03T00:00:00.000Z" },
-      createdAt: "2026-07-03T00:00:00.000Z",
-    },
-  ];
-
-  await page.route("**/api/poc/wallets", async (route) => {
-    await route.fulfill({
-      json: {
-        wallets: {
-          business: { label: "Demo SME", user: users[0] },
-          creator: { label: "Demo Creator", user: users[1] },
-          issuer: { label: "USDW issuer", user: users[2] },
-          escrow: null,
-        },
-      },
-    });
-  });
-  await page.route("**/api/users", async (route) => {
-    await route.fulfill({ json: { users } });
-  });
-  await page.route("**/api/users/*/usdw-balance", async (route) => {
-    await route.fulfill({
-      json: {
-        balance: {
-          symbol: "USDW",
-          decimals: 6,
-          amountUnits: "0",
-          amount: "0",
-          checkedAt: "2026-07-03T00:00:00.000Z",
-        },
-      },
-    });
-  });
-  await page.route("**/api/marketplace", async (route) => {
-    await route.fulfill({
-      json: {
-        briefs: [
-          {
-            id: "brf-disputed",
-            businessId: "usr-sme",
-            title: "Disputed launch reel",
-            category: "Food and restaurants",
-            objective: "Launch reel needs review.",
-            contentType: "Creator posted short video",
-            deliverables: "1 Instagram Reel",
-            location: "Nairobi",
-            platform: "Instagram",
-            usageRights: "Organic reposting for 30 days",
-            revisionCount: 1,
-            budgetUsdi: 120,
-            deadline: "2026-08-15",
-            status: "AWARDED",
-            createdAt: "2026-07-03T00:00:00.000Z",
-          },
-        ],
-        bids: [],
-        agreements: [
-          {
-            id: "agr-disputed",
-            briefId: "brf-disputed",
-            bidId: "bid-disputed",
-            businessId: "usr-sme",
-            creatorId: "usr-creator",
-            grossUsdi: 120,
-            platformFeeUsdi: 12,
-            creatorPayoutUsdi: 108,
-            termsHash: "0xabc",
-            canonicalTerms: "{}",
-            status: resolved ? "REFUNDED" : "DISPUTED",
-            createdAt: "2026-07-03T00:00:00.000Z",
-            updatedAt: "2026-07-03T00:00:00.000Z",
-          },
-        ],
-        escrows: [
-          {
-            id: "esc-disputed",
-            agreementId: "agr-disputed",
-            status: resolved ? "REFUNDED" : "DISPUTED",
-            createdAt: "2026-07-03T00:00:00.000Z",
-            updatedAt: "2026-07-03T00:00:00.000Z",
-          },
-        ],
-        deliveries: [
-          {
-            id: "del-disputed",
-            agreementId: "agr-disputed",
-            creatorId: "usr-creator",
-            url: "https://instagram.com/reel/werra-dispute",
-            note: "Submitted final reel.",
-            createdAt: "2026-07-03T00:00:00.000Z",
-          },
-        ],
-        disputes: resolved
-          ? []
-          : [
-              {
-                id: "dsp-open",
-                agreementId: "agr-disputed",
-                openedBy: "usr-sme",
-                reason: "The delivery needs admin review.",
-                status: "OPEN",
-                createdAt: "2026-07-03T00:00:00.000Z",
-              },
-            ],
-      },
-    });
-  });
-  await page.route("**/api/disputes/dsp-open/settle", async (route) => {
-    resolved = true;
-    await route.fulfill({
-      status: 201,
-      json: {
-        txHash: "0xsettled",
-        resolution: "REFUNDED",
-      },
-    });
-  });
-
-  await page.evaluate(() => localStorage.clear());
-  await page.goto("/");
-  await page.getByRole("button", { name: /Continue as Werra Admin/ }).click();
-  await page.getByRole("button", { name: "Support" }).click();
-  await expect(page.getByRole("heading", { name: "Disputed launch reel" })).toBeVisible();
-  await expect(page.getByText("https://instagram.com/reel/werra-dispute")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Pay creator" })).toBeVisible();
-  await page.getByRole("button", { name: "Refund SME" }).click();
-  await expect(page.getByText("Workspace updated.")).toBeVisible();
-  await expect(page.getByText("No open disputes")).toBeVisible();
 });

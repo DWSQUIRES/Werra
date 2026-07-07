@@ -10,8 +10,6 @@ const apiBaseUrl = `http://127.0.0.1:${apiPort}`;
 const appUrl = `http://127.0.0.1:${frontendPort}`;
 
 const children = [];
-let usdAttemptInFlight = false;
-let usdIssued = false;
 
 async function exists(path) {
   try {
@@ -90,66 +88,13 @@ async function waitForApi() {
 
 function formatWallets(wallets) {
   const rows = [
-    ["Demo SME", wallets.business?.user],
-    ["USDW issuer / Admin", wallets.issuer?.user],
+    ["USDW issuer", wallets.issuer?.user],
     ["Werra escrow custody", wallets.escrow?.user],
-    ["Demo Creator", wallets.creator?.user],
   ];
 
   return rows
     .map(([label, user]) => `${label.padEnd(22)} ${user?.wallet.address ?? "not created"}`)
     .join("\n");
-}
-
-async function getCkb(userId) {
-  const { balance } = await fetchJson(`/api/users/${userId}/ckb-balance`);
-  return Number(balance.capacityCkb);
-}
-
-async function getUsdw(userId) {
-  const { balance } = await fetchJson(`/api/users/${userId}/usdw-balance`);
-  return Number(balance.amount);
-}
-
-async function maybeIssueDemoUsdw(wallets) {
-  if (usdIssued || usdAttemptInFlight || !wallets.business?.user || !wallets.issuer?.user) {
-    return;
-  }
-
-  usdAttemptInFlight = true;
-
-  try {
-    const [issuerCkb, businessUsdw] = await Promise.all([
-      getCkb(wallets.issuer.user.id),
-      getUsdw(wallets.business.user.id),
-    ]);
-
-    if (businessUsdw >= 500) {
-      usdIssued = true;
-      return;
-    }
-
-    if (issuerCkb < 100) {
-      return;
-    }
-
-    console.log("\nIssuer wallet has CKB. Issuing 1000 USDW to the Demo SME...");
-    const { txHash } = await fetchJson("/api/usdw/issue", {
-      method: "POST",
-      body: JSON.stringify({
-        recipientId: wallets.business.user.id,
-        amount: "1000",
-      }),
-    });
-    usdIssued = true;
-    console.log(`USDW issued. Tx: ${txHash}`);
-  } catch (error) {
-    if (!/Insufficient CKB|Insufficient capacity|not enough/i.test(String(error.message))) {
-      console.log(`USDW auto-issue waiting: ${error.message}`);
-    }
-  } finally {
-    usdAttemptInFlight = false;
-  }
 }
 
 async function main() {
@@ -185,14 +130,10 @@ async function main() {
 
   console.log("\nOpen the POC:");
   console.log(`  ${appUrl}`);
-  console.log("\nFund these CKB testnet addresses for the full chain-backed flow:");
+  console.log("\nHidden system wallets:");
   console.log(formatWallets(wallets));
-  console.log("\nSuggested testnet funding:");
-  console.log("  - Demo SME: 500 CKB");
-  console.log("  - USDW issuer / Admin: 300 CKB");
-  console.log("  - Werra escrow custody: 300 CKB");
-  console.log("  - Demo Creator: optional for this POC");
-  console.log("\nAfter the issuer wallet is funded, this launcher will auto-issue 1000 USDW to the Demo SME.");
+  console.log("\nSign in with an SME or Creator email in the browser. Werra will generate a managed wallet for that user.");
+  console.log("For one-click local test funding, set WERRA_CKB_FAUCET_PRIVATE_KEY to a funded CKB testnet private key before starting.");
   console.log("Use Ctrl+C to stop both servers.\n");
 
   const frontend = start(npmCommand, ["run", "dev", "--", "--host", "127.0.0.1", "--port", frontendPort], {
@@ -205,9 +146,6 @@ async function main() {
       process.exit(code ?? 1);
     }
   });
-
-  await maybeIssueDemoUsdw(wallets);
-  setInterval(() => void maybeIssueDemoUsdw(wallets), 20_000);
 }
 
 for (const signal of ["SIGINT", "SIGTERM"]) {

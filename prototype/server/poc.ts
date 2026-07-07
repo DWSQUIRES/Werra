@@ -2,16 +2,6 @@ import type { StoreData, User } from "./types.js";
 import { signupUser, toPublicUser } from "./users.js";
 
 export const pocAccounts = {
-  business: {
-    email: "demo-sme@werra.local",
-    role: "business",
-    label: "Demo SME",
-  },
-  creator: {
-    email: "demo-creator@werra.local",
-    role: "creator",
-    label: "Demo Creator",
-  },
   issuer: {
     email: "demo-issuer@werra.local",
     role: "admin",

@@ -112,7 +112,7 @@ export type ApiPocFundingSetup = {
     targetAmount: string;
   };
   usdw: Array<{
-    account: "business" | "creator";
+    userId: string;
     txHash: string | null;
     issued: boolean;
     issuedAmount: string;
@@ -143,7 +143,7 @@ export type ApiUsdwToken = {
   };
 };
 
-export type ApiPocWalletKey = "business" | "creator" | "issuer" | "escrow";
+export type ApiPocWalletKey = "issuer" | "escrow";
 
 export type ApiPocWallets = Record<
   ApiPocWalletKey,
@@ -260,11 +260,11 @@ export async function getUsdwBalance(userId: string): Promise<ApiUsdwBalance> {
   return data.balance;
 }
 
-export async function preparePocTestFunds(): Promise<ApiPocFundingSetup> {
+export async function preparePocTestFunds(userId: string): Promise<ApiPocFundingSetup> {
   const response = await fetch("/api/poc/prepare-test-funds", {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ ckbAmount: "500", usdwAmount: "1000" }),
+    body: JSON.stringify({ userId, ckbAmount: "500", usdwAmount: "1000" }),
   });
   return parseJson<ApiPocFundingSetup>(response);
 }

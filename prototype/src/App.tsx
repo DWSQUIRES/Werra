@@ -3,7 +3,6 @@ import {
   Check,
   CircleDollarSign,
   Clock3,
-  FileCheck2,
   Gavel,
   HandCoins,
   LayoutDashboard,
@@ -31,13 +30,12 @@ import {
   openApiDispute,
   preparePocTestFunds,
   releaseUsdwEscrow,
-  settleApiDispute,
+  signupManagedUser,
   submitApiDelivery,
   type ApiAgreement,
   type ApiBid,
   type ApiBrief,
   type ApiDelivery,
-  type ApiDispute,
   type ApiEscrow,
   type ApiMarketplace,
   type ApiRole,
@@ -45,7 +43,8 @@ import {
   type ApiUser,
 } from "./api";
 
-type SessionRole = ApiRole;
+type SessionRole = Extract<ApiRole, "business" | "creator">;
+type AppUser = ApiUser & { role: SessionRole };
 type ViewKey =
   | "overview"
   | "briefs"
@@ -53,33 +52,23 @@ type ViewKey =
   | "payments"
   | "opportunities"
   | "workspace"
-  | "earnings"
-  | "operations"
-  | "support";
+  | "earnings";
 
 const sessionKey = "werra-session-email";
 
 const demoAccounts: Record<
   SessionRole,
-  { email: string; title: string; subtitle: string; defaultView: ViewKey }
+  { title: string; subtitle: string; defaultView: ViewKey }
 > = {
   business: {
-    email: "demo-sme@werra.local",
     title: "SME",
     subtitle: "Post briefs, select creators, approve payout.",
     defaultView: "overview",
   },
   creator: {
-    email: "demo-creator@werra.local",
     title: "Creator",
     subtitle: "Find paid content work, submit delivery, track payout.",
     defaultView: "opportunities",
-  },
-  admin: {
-    email: "demo-issuer@werra.local",
-    title: "Werra Admin",
-    subtitle: "Monitor payments, support disputes, manage beta balances.",
-    defaultView: "operations",
   },
 };
 
@@ -102,21 +91,20 @@ function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
 
-  const currentUser = users.find((user) => user.email === sessionEmail);
+  const sessionUser = users.find((user) => user.email === sessionEmail);
+  const currentUser: AppUser | undefined = sessionUser && isAppRole(sessionUser.role) ? sessionUser as AppUser : undefined;
   const currentRole = currentUser?.role;
 
   const context = useMemo(() => buildContext(users, market), [users, market]);
 
-  async function refresh(options: { loadBalances?: boolean } = { loadBalances: true }) {
+  async function refresh(options: { loadBalances?: boolean; balanceUserId?: string } = { loadBalances: true }) {
     const [loadedUsers, loadedMarket] = await Promise.all([getManagedUsers(), getMarketplace()]);
     setUsers(loadedUsers);
     setMarket(loadedMarket);
 
     if (options.loadBalances) {
-      const relevant = loadedUsers.filter((user) =>
-        Object.values(demoAccounts).some((account) => account.email === user.email)
-        || loadedMarket.agreements.some((agreement) => agreement.businessId === user.id || agreement.creatorId === user.id),
-      );
+      const balanceUserId = options.balanceUserId ?? loadedUsers.find((user) => user.email === sessionEmail)?.id;
+      const relevant = loadedUsers.filter((user) => user.id === balanceUserId);
       const entries = await Promise.all(
         relevant.map(async (user) => [user.id, await getUsdwBalance(user.id)] as const),
       );
@@ -158,10 +146,35 @@ function App() {
     }
   }, [currentRole, view]);
 
-  function login(role: SessionRole) {
-    localStorage.setItem(sessionKey, demoAccounts[role].email);
-    setSessionEmail(demoAccounts[role].email);
-    setView(demoAccounts[role].defaultView);
+  async function signIn(email: string, role: SessionRole) {
+    try {
+      setBusy("Signing in...");
+      setNotice("Creating managed wallet...");
+      const user = await signupManagedUser(email, role);
+
+      if (!isAppRole(user.role)) {
+        throw new Error("Use an SME or creator account to access this preview.");
+      }
+
+      localStorage.setItem(sessionKey, user.email);
+      setSessionEmail(user.email);
+      setView(demoAccounts[user.role].defaultView);
+
+      let setupError: unknown;
+      try {
+        setNotice("Preparing test balance...");
+        await preparePocTestFunds(user.id);
+      } catch (error) {
+        setupError = error;
+      }
+
+      await refresh({ balanceUserId: user.id });
+      setNotice(setupError ? `Signed in. Test balance setup failed: ${humanError(setupError)}` : "Workspace ready.");
+    } catch (error) {
+      setNotice(humanError(error));
+    } finally {
+      setBusy(null);
+    }
   }
 
   function logout() {
@@ -190,16 +203,9 @@ function App() {
       <LoginScreen
         ready={ready}
         notice={notice}
-        users={users}
         busy={busy}
-        onLogin={login}
+        onSignIn={(email, role) => void signIn(email, role)}
         onRefresh={() => void boot()}
-        onPrepareTestFunds={() =>
-          void runAction("Preparing test wallets...", async () => {
-            await preparePocTestFunds();
-            await refresh();
-          })
-        }
       />
     );
   }
@@ -292,17 +298,6 @@ function App() {
           />
         )}
 
-        {activeRole === "admin" && (
-          <AdminWorkspace
-            user={currentUser}
-            context={context}
-            busy={busy}
-            view={view}
-            setView={setView}
-            runAction={runAction}
-            refresh={refresh}
-          />
-        )}
       </main>
     </div>
   );
@@ -311,20 +306,24 @@ function App() {
 function LoginScreen({
   ready,
   notice,
-  users,
   busy,
-  onLogin,
+  onSignIn,
   onRefresh,
-  onPrepareTestFunds,
 }: {
   ready: boolean;
   notice: string;
-  users: ApiUser[];
   busy: string | null;
-  onLogin: (role: SessionRole) => void;
+  onSignIn: (email: string, role: SessionRole) => void;
   onRefresh: () => void;
-  onPrepareTestFunds: () => void;
 }) {
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState<SessionRole>("business");
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    onSignIn(email, role);
+  }
+
   return (
     <main className="login-shell">
       <section className="login-panel">
@@ -332,36 +331,44 @@ function LoginScreen({
           <h1 className="brand-wordmark">werra</h1>
         </div>
 
-        <div className="login-setup-card">
-          <div>
-            <span>Public test setup</span>
-            <strong>Fund demo wallets</strong>
-            <small>One click prepares the POC with 500 CKB gas and 1000 USDW for test accounts.</small>
+        <form className="login-form" onSubmit={submit}>
+          <div className="login-copy">
+            <span>Managed wallet preview</span>
+            <strong>Sign in with email</strong>
+            <small>Werra creates a testnet wallet for your account and prepares test balances for the POC.</small>
           </div>
-          <button className="primary-button" disabled={!ready || Boolean(busy)} onClick={onPrepareTestFunds}>
-            {busy ? <RefreshCcw size={16} /> : <Wallet size={16} />}
-            <span>{busy ? "Preparing..." : "Prepare test wallets"}</span>
-          </button>
-        </div>
 
-        <div className="login-grid">
-          {(Object.keys(demoAccounts) as SessionRole[]).map((role) => {
-            const account = demoAccounts[role];
-            const available = users.some((user) => user.email === account.email);
-            return (
+          <label>
+            Email
+            <input
+              type="email"
+              value={email}
+              placeholder="you@example.com"
+              onChange={(event) => setEmail(event.target.value)}
+              required
+            />
+          </label>
+
+          <div className="role-choice" role="group" aria-label="Account type">
+            {(Object.keys(demoAccounts) as SessionRole[]).map((item) => (
               <button
-                key={role}
-                className="login-card"
-                disabled={!ready || !available || Boolean(busy)}
-                onClick={() => onLogin(role)}
+                key={item}
+                type="button"
+                className={role === item ? "active" : ""}
+                onClick={() => setRole(item)}
+                disabled={!ready || Boolean(busy)}
               >
-                <span>{account.title}</span>
-                <strong>Continue as {account.title}</strong>
-                <small>{account.subtitle}</small>
+                <span>{demoAccounts[item].title}</span>
+                <small>{demoAccounts[item].subtitle}</small>
               </button>
-            );
-          })}
-        </div>
+            ))}
+          </div>
+
+          <button className="primary-button full" type="submit" disabled={!ready || Boolean(busy)}>
+            {busy ? <RefreshCcw size={16} /> : <Wallet size={16} />}
+            <span>{busy ? "Preparing account..." : "Continue"}</span>
+          </button>
+        </form>
 
         <div className={`login-footer ${notice ? "" : "empty"}`}>
           {notice && <span>{notice}</span>}
@@ -611,72 +618,6 @@ function CreatorWorkspace(props: WorkspaceProps & { user: ApiUser; balance?: Api
           );
         })
       )}
-    </div>
-  );
-}
-
-function AdminWorkspace(
-  props: WorkspaceProps & {
-    user: ApiUser;
-  },
-) {
-  const { user, context, view, busy, runAction, refresh } = props;
-  const disputes = newestFirst(context.disputes.filter((dispute) => dispute.status === "OPEN"));
-  const agreements = newestFirst(context.agreements, "updatedAt");
-
-  if (view === "support") {
-    return (
-      <div className="content-grid">
-        {disputes.length === 0 ? (
-          <EmptyState icon={<Gavel />} title="No open disputes" text="Support cases opened by SMEs will appear here." />
-        ) : (
-          disputes.map((dispute) => (
-            <Panel key={dispute.id} title="Dispute review">
-              <DisputeDetails dispute={dispute} context={context} />
-              <div className="button-row">
-                <button
-                  className="primary-button"
-                  disabled={Boolean(busy)}
-                  onClick={() =>
-                    runAction("Settling dispute...", async () => {
-                      await settleApiDispute(dispute.id, { adminId: user.id, decision: "release" });
-                      await refresh();
-                    })
-                  }
-                >
-                  <HandCoins size={16} />
-                  <span>Pay creator</span>
-                </button>
-                <button
-                  className="danger-button"
-                  disabled={Boolean(busy)}
-                  onClick={() =>
-                    runAction("Settling dispute...", async () => {
-                      await settleApiDispute(dispute.id, { adminId: user.id, decision: "refund" });
-                      await refresh();
-                    })
-                  }
-                >
-                  <RefreshCcw size={16} />
-                  <span>Refund SME</span>
-                </button>
-              </div>
-            </Panel>
-          ))
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div className="content-grid">
-      <section className="metric-grid">
-        <Metric icon={<BriefcaseBusiness />} label="Briefs" value={context.briefs.length} />
-        <Metric icon={<ShieldCheck />} label="Active escrows" value={context.agreements.filter((a) => a.status === "FUNDED").length} />
-        <Metric icon={<Upload />} label="In review" value={context.agreements.filter((a) => a.status === "DELIVERED").length} />
-        <Metric icon={<Gavel />} label="Disputes" value={disputes.length} />
-      </section>
-      <AgreementList agreements={agreements} context={context} emptyText="No marketplace agreements yet." />
     </div>
   );
 }
@@ -1159,42 +1100,6 @@ function BriefDetails({ brief, compact }: { brief: ApiBrief; compact?: boolean }
   );
 }
 
-function DisputeDetails({ dispute, context }: { dispute: ApiDispute; context: AppContext }) {
-  const agreement = context.agreementById.get(dispute.agreementId);
-  const brief = agreement ? context.briefById.get(agreement.briefId) : undefined;
-  const business = agreement ? context.userById.get(agreement.businessId) : undefined;
-  const creator = agreement ? context.userById.get(agreement.creatorId) : undefined;
-  const delivery = context.deliveryByAgreement.get(dispute.agreementId);
-
-  return (
-    <div className="agreement-card">
-      <div className="summary-title">
-        <StatusBadge status={dispute.status} />
-        <h3>{brief?.title ?? "Disputed agreement"}</h3>
-      </div>
-      <p>{dispute.reason}</p>
-      {agreement && (
-        <div className="summary-grid">
-          <SummaryItem label="Amount" value={`${agreement.grossUsdi.toFixed(2)} USDW`} />
-          <SummaryItem label="Creator payout" value={`${agreement.creatorPayoutUsdi.toFixed(2)} USDW`} />
-          <SummaryItem label="SME" value={displayName(business)} />
-          <SummaryItem label="Creator" value={displayName(creator)} />
-          <SummaryItem label="Opened" value={new Date(dispute.createdAt).toLocaleDateString()} />
-        </div>
-      )}
-      {delivery && (
-        <div className="delivery-note">
-          <span>Submitted work</span>
-          <a href={delivery.url} target="_blank" rel="noreferrer">
-            {delivery.url}
-          </a>
-          <p>{delivery.note}</p>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function Panel({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   return (
     <section className="panel">
@@ -1262,15 +1167,6 @@ function newestFirst<T extends { createdAt: string }>(items: T[], key: keyof T =
 }
 
 function navFor(role: SessionRole) {
-  if (role === "business") {
-    return [
-      { view: "overview" as const, label: "Overview", icon: LayoutDashboard },
-      { view: "briefs" as const, label: "Post Brief", icon: Plus },
-      { view: "applications" as const, label: "Applications", icon: Users },
-      { view: "payments" as const, label: "Payments", icon: ShieldCheck },
-    ];
-  }
-
   if (role === "creator") {
     return [
       { view: "opportunities" as const, label: "Find Work", icon: Sparkles },
@@ -1280,8 +1176,10 @@ function navFor(role: SessionRole) {
   }
 
   return [
-    { view: "operations" as const, label: "Overview", icon: LayoutDashboard },
-    { view: "support" as const, label: "Support", icon: Gavel },
+    { view: "overview" as const, label: "Overview", icon: LayoutDashboard },
+    { view: "briefs" as const, label: "Post Brief", icon: Plus },
+    { view: "applications" as const, label: "Applications", icon: Users },
+    { view: "payments" as const, label: "Payments", icon: ShieldCheck },
   ];
 }
 
@@ -1294,8 +1192,6 @@ function titleFor(view: ViewKey) {
     opportunities: "Open briefs",
     workspace: "Submit completed work",
     earnings: "Earnings",
-    operations: "Operations overview",
-    support: "Support queue",
   };
   return titles[view];
 }
@@ -1320,10 +1216,13 @@ function statusLabel(status: string) {
 
 function displayName(user?: ApiUser) {
   if (!user) return "Creator";
-  if (user.email === demoAccounts.creator.email) return "Demo Creator";
-  if (user.email === demoAccounts.business.email) return "Demo SME";
-  if (user.email === demoAccounts.admin.email) return "Werra Admin";
+  if (user.role === "business") return user.email.split("@")[0];
+  if (user.role === "creator") return user.email.split("@")[0];
   return user.email.split("@")[0];
+}
+
+function isAppRole(role: ApiRole): role is SessionRole {
+  return role === "business" || role === "creator";
 }
 
 function humanError(error: unknown) {

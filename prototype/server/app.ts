@@ -2,7 +2,6 @@ import express from "express";
 import { z } from "zod";
 
 import {
-  fundManagedWalletsCkb,
   getCkbFaucetStatus,
   getConfiguredFaucetWallet,
   getWalletCkbBalance,
@@ -34,7 +33,9 @@ import {
   type UsdwTransferOutput,
   usdwReleaseFeeReserveShannons,
 } from "./usdw.js";
-import type { ManagedWallet } from "./types.js";
+import type { ManagedWallet, User } from "./types.js";
+
+type ManagedWalletUser = Pick<User, "id" | "wallet">;
 
 const issueUsdwSchema = z.object({
   recipientId: z.string().min(1),
@@ -58,51 +59,29 @@ const settleDisputeSchema = z.object({
   decision: z.enum(["release", "refund"]),
 });
 
-const fundPocCkbSchema = z.object({
-  adminId: z.string().min(1),
-  amount: z.string().min(1).default("100"),
-});
-
-const fundPocUsdwSchema = z.object({
-  adminId: z.string().min(1),
-  account: z.enum(["business", "creator"]),
-  amount: z.string().min(1),
-});
-
 const preparePocFundingSchema = z.object({
+  userId: z.string().min(1),
   ckbAmount: z.string().min(1).default("500"),
   usdwAmount: z.string().min(1).default("1000"),
 });
-
-function assertAdminUser(data: Awaited<ReturnType<typeof readStore>>, adminId: string) {
-  const admin = data.users.find((user) => user.id === adminId);
-
-  if (!admin || admin.role !== "admin") {
-    throw new Error("Only a Werra admin can perform this action");
-  }
-
-  return admin;
-}
 
 async function resolveUsdwIssuerWallet(data: Awaited<ReturnType<typeof readStore>>) {
   return (await getConfiguredFaucetWallet()) ?? requirePocUser(data, "issuer").wallet;
 }
 
-async function planPocUsdwTopUp(
-  data: Awaited<ReturnType<typeof readStore>>,
+async function planUserUsdwTopUp(
   issuerWallet: ManagedWallet,
-  account: "business" | "creator",
+  user: ManagedWalletUser,
   amount: string,
 ) {
-  const recipient = requirePocUser(data, account);
   const targetUnits = parseUsdwAmount(amount);
-  const balance = await getUsdwBalance(recipient.wallet, issuerWallet);
+  const balance = await getUsdwBalance(user.wallet, issuerWallet);
   const currentUnits = BigInt(balance.amountUnits);
 
   if (currentUnits >= targetUnits) {
     return {
       result: {
-        account,
+        userId: user.id,
         txHash: null,
         issued: false,
         issuedAmount: "0",
@@ -115,40 +94,16 @@ async function planPocUsdwTopUp(
 
   return {
     result: {
-      account,
+      userId: user.id,
       txHash: null,
       issued: true,
       issuedAmount: formatUsdwAmount(amountUnits),
       targetAmount: amount,
     },
     output: {
-      wallet: recipient.wallet,
+      wallet: user.wallet,
       amountUnits,
     } satisfies UsdwTransferOutput,
-  };
-}
-
-async function topUpPocUsdw(
-  data: Awaited<ReturnType<typeof readStore>>,
-  account: "business" | "creator",
-  amount: string,
-) {
-  const issuerWallet = await resolveUsdwIssuerWallet(data);
-  const plan = await planPocUsdwTopUp(data, issuerWallet, account, amount);
-
-  if (!plan.output) {
-    return plan.result;
-  }
-
-  const txHash = await issueUsdw({
-    issuerWallet,
-    recipientWallet: plan.output.wallet,
-    amountUnits: plan.output.amountUnits,
-  });
-
-  return {
-    ...plan.result,
-    txHash,
   };
 }
 
@@ -397,22 +352,22 @@ export function createApp() {
       const input = preparePocFundingSchema.parse(request.body ?? {});
       await ensurePocWallets();
       const data = await readStore();
+      const user = data.users.find((item) => item.id === input.userId);
       const issuerWallet = await getConfiguredFaucetWallet();
 
       if (!issuerWallet) {
         throw new Error("CKB gas sponsorship is not configured for this deployment");
       }
 
+      if (!user || (user.role !== "business" && user.role !== "creator")) {
+        throw new Error("A signed-in SME or creator is required before funding a test wallet");
+      }
+
       const ckbOutputs = await planManagedWalletsCkbFunding([
-        { wallet: requirePocUser(data, "business").wallet, amount: input.ckbAmount },
-        { wallet: requirePocUser(data, "creator").wallet, amount: input.ckbAmount },
-        { wallet: requirePocUser(data, "issuer").wallet, amount: input.ckbAmount },
+        { wallet: user.wallet, amount: input.ckbAmount },
         { wallet: requirePocUser(data, "escrow").wallet, amount: input.ckbAmount },
       ]);
-      const usdwPlans = await Promise.all([
-        planPocUsdwTopUp(data, issuerWallet, "business", input.usdwAmount),
-        planPocUsdwTopUp(data, issuerWallet, "creator", input.usdwAmount),
-      ]);
+      const usdwPlans = [await planUserUsdwTopUp(issuerWallet, user, input.usdwAmount)];
       const usdwOutputs = usdwPlans.flatMap((plan) => (plan.output ? [plan.output] : []));
       const txHash = await issueUsdwAndFundCkb({
         issuerWallet,
@@ -435,37 +390,6 @@ export function createApp() {
             : plan.result,
         ),
       });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.post("/api/poc/fund-ckb", async (request, response, next) => {
-    try {
-      const input = fundPocCkbSchema.parse(request.body);
-      const data = await readStore();
-      assertAdminUser(data, input.adminId);
-
-      const result = await fundManagedWalletsCkb([
-        { wallet: requirePocUser(data, "business").wallet, amount: input.amount },
-        { wallet: requirePocUser(data, "creator").wallet, amount: input.amount },
-        { wallet: requirePocUser(data, "issuer").wallet, amount: input.amount },
-        { wallet: requirePocUser(data, "escrow").wallet, amount: input.amount },
-      ]);
-
-      response.status(result.txHash ? 201 : 200).json({ ...result, amountCkb: input.amount });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.post("/api/poc/fund-usdw", async (request, response, next) => {
-    try {
-      const input = fundPocUsdwSchema.parse(request.body);
-      const data = await readStore();
-      assertAdminUser(data, input.adminId);
-      const result = await topUpPocUsdw(data, input.account, input.amount);
-      response.status(result.txHash ? 201 : 200).json(result);
     } catch (error) {
       next(error);
     }

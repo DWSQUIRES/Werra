@@ -914,42 +914,6 @@ textarea:focus {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.admin-table {
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel);
-  box-shadow: var(--shadow);
-}
-
-.admin-head,
-.admin-row {
-  display: grid;
-  grid-template-columns: minmax(170px, 0.9fr) minmax(220px, 1.3fr) 150px 130px minmax(180px, 0.8fr);
-  gap: 14px;
-  align-items: center;
-  padding: 14px 16px;
-}
-
-.admin-head {
-  background: var(--quiet);
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 900;
-  letter-spacing: 0;
-  text-transform: uppercase;
-}
-
-.admin-row {
-  border-top: 1px solid var(--line);
-}
-
-.admin-row small {
-  display: block;
-  margin-top: 4px;
-  color: var(--muted);
-}
-
 .link-button {
   border: 0;
   background: transparent;
@@ -1015,81 +979,68 @@ textarea:focus {
   justify-content: center;
 }
 
-.login-grid {
+.login-form,
+.login-copy {
   display: grid;
-  gap: 8px;
+  gap: 12px;
 }
 
-.login-setup-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  border: 1px solid #b9dccd;
-  border-radius: 7px;
-  background: var(--brand-soft);
-  padding: 14px;
-}
-
-.login-setup-card > div {
-  display: grid;
-  min-width: 0;
-  gap: 5px;
-}
-
-.login-setup-card span {
-  color: var(--brand-strong);
-  font-size: 12px;
-  font-weight: 900;
-  text-transform: uppercase;
-}
-
-.login-setup-card strong {
-  font-size: 16px;
-}
-
-.login-setup-card small {
-  color: var(--muted);
-  line-height: 1.45;
-}
-
-.login-card {
-  display: grid;
-  min-height: 0;
-  align-content: start;
-  gap: 6px;
+.login-form {
   border: 1px solid var(--line);
   border-radius: 7px;
   background: var(--panel);
-  padding: 13px 14px;
-  text-align: left;
-  box-shadow: var(--shadow);
+  padding: 16px;
 }
 
-.login-card:hover:not(:disabled) {
-  border-color: #b9cfc6;
-  background: #fcfdfb;
+.login-copy {
+  gap: 5px;
 }
 
-.login-card:disabled {
-  cursor: not-allowed;
-  opacity: 0.58;
-}
-
-.login-card span {
+.login-copy span {
   color: var(--brand-strong);
   font-size: 12px;
   font-weight: 900;
   text-transform: uppercase;
 }
 
-.login-card strong {
-  font-size: 16px;
+.login-copy strong {
+  font-size: 18px;
 }
 
-.login-card small {
+.login-copy small {
   color: var(--muted);
   line-height: 1.5;
+}
+
+.role-choice {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.role-choice button {
+  display: grid;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--ink);
+  padding: 12px;
+  text-align: left;
+}
+
+.role-choice button.active {
+  border-color: #a5d3c0;
+  background: var(--brand-soft);
+}
+
+.role-choice span {
+  font-weight: 900;
+}
+
+.role-choice small {
+  color: var(--muted);
+  line-height: 1.4;
 }
 
 .login-footer {
@@ -1333,9 +1284,6 @@ textarea:focus {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .login-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (max-width: 760px) {
@@ -1357,6 +1305,7 @@ textarea:focus {
   .metric-grid,
   .creator-stats,
   .summary-grid,
+  .role-choice,
   .poc-step-grid,
   .form-row,
   .agreement-terms,
@@ -1364,27 +1313,7 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
-  .admin-table {
-    display: grid;
-    gap: 10px;
-    border: 0;
-    background: transparent;
-    box-shadow: none;
-  }
-
-  .admin-head {
-    display: none;
-  }
-
-  .admin-row {
-    grid-template-columns: 1fr;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: var(--panel);
-  }
-
   .action-row,
-  .login-setup-card,
   .login-footer {
     align-items: stretch;
     flex-direction: column;

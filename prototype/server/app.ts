@@ -225,6 +225,25 @@ export function createApp() {
     });
   });
 
+  app.get("/api/debug", (request, response) => {
+    response.json({
+      ok: true,
+      route: "express /api/debug",
+      method: request.method,
+      originalUrl: request.originalUrl,
+      url: request.url,
+      path: request.path,
+      host: request.headers.host,
+      vercel: process.env.VERCEL === "1",
+      environment: process.env.VERCEL_ENV,
+      node: process.version,
+      storeDriver: config.storeDriver,
+      persistentStore: config.storeDriver === "postgres",
+      hasDatabaseUrl: Boolean(config.postgresUrl),
+      hasWalletEncryptionKey: !config.usingDefaultDevSecret,
+    });
+  });
+
   app.get("/api/users", async (_request, response, next) => {
     try {
       const data = await readStore();
@@ -475,6 +494,15 @@ export function createApp() {
     } catch (error) {
       next(error);
     }
+  });
+
+  app.use("/api", (request, response) => {
+    response.status(404).json({
+      error: "API route not found",
+      method: request.method,
+      originalUrl: request.originalUrl,
+      path: request.path,
+    });
   });
 
   app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {

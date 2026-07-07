@@ -219,6 +219,8 @@ export function createApp() {
       service: "werra-poc-api",
       network: config.chainNetwork,
       managedWallets: true,
+      storeDriver: config.storeDriver,
+      persistentStore: config.storeDriver === "postgres",
       defaultDevSecret: config.usingDefaultDevSecret,
     });
   });

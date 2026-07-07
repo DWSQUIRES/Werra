@@ -73,13 +73,18 @@ Recommended Vercel environment variables:
 ```text
 CKB_NETWORK=testnet
 WERRA_WALLET_ENCRYPTION_KEY=<long random secret>
+WERRA_STORE_DRIVER=postgres
+DATABASE_URL=<Neon Postgres connection string>
+WERRA_STORE_KEY=werra-poc
 ```
 
 `CKB_RPC_URL` is optional. Set it only if you want to use a specific CKB testnet RPC endpoint.
 
-The hosted Vercel deployment uses Vercel serverless functions and stores POC state under `/tmp`. That is enough for a community UI preview, but it is not durable storage. For the full CKB-funded test flow, use the local one-command preview because the local store keeps the generated test wallets on the tester's machine.
+For persistent hosted storage on Vercel Hobby, attach a Neon Postgres database from Vercel Marketplace or provide a compatible Postgres connection string manually. The app stores the POC marketplace state, generated managed wallets, agreements, deliveries, and disputes in one JSONB row. Keep `WERRA_WALLET_ENCRYPTION_KEY` stable after the first deployment, because managed wallet keys are encrypted with it.
 
-If you still want to run a funded hosted test, open the deployed app once, then check `/api/poc/wallets` on the same deployment to view the generated testnet addresses. Fund only with CKB testnet funds.
+If `WERRA_STORE_DRIVER=postgres` is set without `DATABASE_URL`, the API will fail fast instead of silently using ephemeral storage. Without Postgres configuration, local development still uses the JSON store under `prototype/.werra-poc`.
+
+For a funded hosted test, open the deployed app once, then check `/api/poc/wallets` on the same deployment to view the generated testnet addresses. Fund only with CKB testnet funds.
 
 ## Notes
 

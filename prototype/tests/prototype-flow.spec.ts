@@ -33,11 +33,25 @@ async function signIn(page: Page, role: "business" | "creator", email: string) {
       },
     });
   });
+  await page.route("**/api/users/*/usdw-balance", async (route) => {
+    await route.fulfill({
+      json: {
+        balance: {
+          symbol: "USDW",
+          decimals: 6,
+          amountUnits: "1000000000",
+          amount: "1000",
+          checkedAt: "2026-07-03T00:00:00.000Z",
+        },
+      },
+    });
+  });
 
   await page.getByLabel("Email").fill(email);
   await page.getByRole("button", { name: role === "business" ? /SME/ : /Creator/ }).click();
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByText("Workspace ready.")).toBeVisible();
+  await expect(page.getByText("Wallet ready")).toBeVisible();
 
   return preparedUserId;
 }
@@ -54,6 +68,7 @@ test("email sign-in creates a managed user and prepares that user's test wallet"
   const preparedUserId = await signIn(page, "business", email);
 
   await expect(page.getByText(email)).toBeVisible();
+  await expect(page.getByText("Auto-sync")).toBeVisible();
   await expect(page.getByText("CKB wallet")).toBeVisible();
   await expect(page.getByRole("button", { name: "Copy CKB wallet address" })).toBeVisible();
   expect(preparedUserId).toMatch(/^usr_/);

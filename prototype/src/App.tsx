@@ -34,6 +34,8 @@ import {
   releaseUsdwEscrow,
   signupManagedUser,
   submitApiDelivery,
+  TEST_CKB_TARGET,
+  TEST_USDW_TARGET,
   type ApiAgreement,
   type ApiBid,
   type ApiBrief,
@@ -58,6 +60,26 @@ type ViewKey =
   | "earnings";
 
 const sessionKey = "werra-session-email";
+const faucetUrl = "https://faucet.nervos.org/";
+const regularSyncMs = 15_000;
+const activeFundingSyncMs = 5_000;
+const balanceFollowUpDelays = [3_000, 8_000, 15_000, 30_000];
+const ckbReadyTarget = Number(TEST_CKB_TARGET);
+const usdwReadyTarget = Number(TEST_USDW_TARGET);
+
+type FundingPhase = "checking" | "preparing" | "confirming" | "ready" | "manual" | "error";
+
+type FundingStatus = {
+  phase: FundingPhase;
+  title: string;
+  detail: string;
+};
+
+const initialFundingStatus: FundingStatus = {
+  phase: "checking",
+  title: "Checking wallet",
+  detail: "Balances sync automatically while you use the POC.",
+};
 
 const demoAccounts: Record<
   SessionRole,
@@ -95,6 +117,10 @@ function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [copiedWalletId, setCopiedWalletId] = useState<string | null>(null);
+  const [fundingStatus, setFundingStatus] = useState<FundingStatus>(initialFundingStatus);
+  const [balanceSyncing, setBalanceSyncing] = useState(false);
+  const [lastBalanceSync, setLastBalanceSync] = useState<string | null>(null);
+  const balanceSyncTimers = useRef<number[]>([]);
 
   const sessionUser = users.find((user) => user.email === sessionEmail);
   const currentUser: AppUser | undefined = sessionUser && isAppRole(sessionUser.role) ? sessionUser as AppUser : undefined;
@@ -102,43 +128,79 @@ function App() {
 
   const context = useMemo(() => buildContext(users, market), [users, market]);
 
+  async function refreshBalancesForUser(userId: string) {
+    setBalanceSyncing(true);
+
+    try {
+      const [usdwBalance, ckbBalance] = await Promise.all([
+        getUsdwBalance(userId),
+        getCkbBalance(userId),
+      ]);
+      const checkedAt = new Date().toISOString();
+
+      setBalances((current) => ({ ...current, [userId]: usdwBalance }));
+      setCkbBalances((current) => ({ ...current, [userId]: ckbBalance }));
+      setFundingStatus(describeFundingStatus(usdwBalance, ckbBalance));
+      setLastBalanceSync(checkedAt);
+
+      return { usdwBalance, ckbBalance };
+    } finally {
+      setBalanceSyncing(false);
+    }
+  }
+
   async function refresh(options: { loadBalances?: boolean; balanceUserId?: string } = { loadBalances: true }) {
     const [loadedUsers, loadedMarket] = await Promise.all([getManagedUsers(), getMarketplace()]);
     setUsers(loadedUsers);
     setMarket(loadedMarket);
 
-    if (options.loadBalances) {
+    let refreshedBalances: Awaited<ReturnType<typeof refreshBalancesForUser>> | undefined;
+
+    if (options.loadBalances ?? true) {
       const balanceUserId = options.balanceUserId ?? loadedUsers.find((user) => user.email === sessionEmail)?.id;
-      const relevant = loadedUsers.filter((user) => user.id === balanceUserId);
-      const entries = await Promise.all(
-        relevant.map(async (user) => {
-          const [usdwBalance, ckbBalance] = await Promise.all([
-            getUsdwBalance(user.id),
-            getCkbBalance(user.id),
-          ]);
-          return [user.id, usdwBalance, ckbBalance] as const;
-        }),
-      );
-      setBalances(Object.fromEntries(entries.map(([userId, usdwBalance]) => [userId, usdwBalance])));
-      setCkbBalances(Object.fromEntries(entries.map(([userId, _usdwBalance, ckbBalance]) => [userId, ckbBalance])));
+
+      if (balanceUserId) {
+        refreshedBalances = await refreshBalancesForUser(balanceUserId);
+      }
     }
+
+    return { users: loadedUsers, market: loadedMarket, balances: refreshedBalances };
   }
 
-  async function syncBalances() {
+  async function syncBalances(userId?: string) {
+    const balanceUserId = userId ?? currentUser?.id;
+
+    if (!balanceUserId) {
+      return;
+    }
+
     try {
-      await refresh({ loadBalances: true });
+      await refreshBalancesForUser(balanceUserId);
     } catch (error) {
       console.warn("Balance sync failed", error);
     }
+  }
+
+  function scheduleBalanceFollowUp(userId: string) {
+    balanceSyncTimers.current.forEach((timer) => window.clearTimeout(timer));
+    balanceSyncTimers.current = balanceFollowUpDelays.map((delay) =>
+      window.setTimeout(() => {
+        void syncBalances(userId);
+      }, delay),
+    );
   }
 
   async function boot() {
     try {
       setReady(false);
       await bootstrapPocWallets();
-      await refresh({ loadBalances: false });
+      const loaded = await refresh({ loadBalances: false });
+      const activeUser = loaded.users.find((user) => user.email === sessionEmail);
       setNotice("");
-      void syncBalances();
+
+      if (activeUser && isAppRole(activeUser.role)) {
+        void syncBalances(activeUser.id);
+      }
     } catch (error) {
       setNotice(humanError(error));
     } finally {
@@ -158,10 +220,43 @@ function App() {
     }
   }, [currentRole, view]);
 
+  useEffect(() => {
+    return () => {
+      balanceSyncTimers.current.forEach((timer) => window.clearTimeout(timer));
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const intervalMs =
+      fundingStatus.phase === "checking" ||
+      fundingStatus.phase === "preparing" ||
+      fundingStatus.phase === "confirming"
+        ? activeFundingSyncMs
+        : regularSyncMs;
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "hidden") {
+        return;
+      }
+
+      void refresh({ balanceUserId: currentUser.id }).catch((error) => {
+        console.warn("Workspace sync failed", error);
+      });
+    }, intervalMs);
+
+    return () => window.clearInterval(interval);
+  }, [currentUser?.id, fundingStatus.phase, sessionEmail]);
+
   async function signIn(email: string, role: SessionRole) {
     try {
       setBusy("Signing in...");
       setNotice("Creating managed wallet...");
+      setFundingStatus({
+        phase: "preparing",
+        title: "Preparing wallet",
+        detail: "Creating or loading your managed testnet wallet.",
+      });
       const user = await signupManagedUser(email, role);
 
       if (!isAppRole(user.role)) {
@@ -173,17 +268,47 @@ function App() {
       setView(demoAccounts[user.role].defaultView);
 
       let setupError: unknown;
+      let submittedFunding = false;
       try {
         setNotice("Preparing test balance...");
-        await preparePocTestFunds(user.id);
+        const setup = await preparePocTestFunds(user.id);
+        submittedFunding = Boolean(setup.ckb.txHash || setup.usdw.some((item) => item.txHash));
+
+        if (submittedFunding) {
+          setFundingStatus({
+            phase: "confirming",
+            title: "Funding submitted",
+            detail: "Test CKB and USDW were requested. Balances update here as the network confirms them.",
+          });
+        }
       } catch (error) {
         setupError = error;
+        setFundingStatus({
+          phase: "error",
+          title: "Funding needs attention",
+          detail: humanError(error),
+        });
       }
 
-      await refresh({ balanceUserId: user.id });
-      setNotice(setupError ? `Signed in. Test balance setup failed: ${humanError(setupError)}` : "Workspace ready.");
+      const refreshed = await refresh({ balanceUserId: user.id });
+      const readyForFlow = refreshed.balances ? isFundingReady(refreshed.balances.usdwBalance, refreshed.balances.ckbBalance) : false;
+
+      if (setupError) {
+        setNotice("Signed in. Test funding needs attention.");
+      } else if (readyForFlow) {
+        setNotice("Workspace ready.");
+      } else {
+        setNotice(submittedFunding ? "Signed in. Funding is confirming automatically." : "Signed in. Balances are syncing.");
+      }
+
+      scheduleBalanceFollowUp(user.id);
     } catch (error) {
       setNotice(humanError(error));
+      setFundingStatus({
+        phase: "error",
+        title: "Workspace setup failed",
+        detail: humanError(error),
+      });
     } finally {
       setBusy(null);
     }
@@ -211,6 +336,9 @@ function App() {
       setBusy(label);
       setNotice(label);
       await action();
+      if (currentUser) {
+        scheduleBalanceFollowUp(currentUser.id);
+      }
       setNotice("Workspace updated.");
       return true;
     } catch (error) {
@@ -219,6 +347,10 @@ function App() {
     } finally {
       setBusy(null);
     }
+  }
+
+  async function refreshWorkspace() {
+    await refresh();
   }
 
   if (!currentUser) {
@@ -237,6 +369,7 @@ function App() {
   const nav = navFor(activeRole);
   const balance = balances[currentUser.id];
   const ckbBalance = ckbBalances[currentUser.id];
+  const walletStatus = deriveFundingStatus(fundingStatus, balance, ckbBalance);
 
   return (
     <div className="app-shell role-app">
@@ -265,6 +398,12 @@ function App() {
         </nav>
 
         <div className="wallet-panel">
+          <div className={`wallet-health ${walletStatus.phase}`}>
+            <div>
+              <span>{walletStatus.title}</span>
+              <p>{walletStatus.detail}</p>
+            </div>
+          </div>
           <div className="wallet-row">
             <span>USDW available</span>
             <strong>{balance ? `${balance.amount} USDW` : "Syncing"}</strong>
@@ -272,6 +411,10 @@ function App() {
           <div className="wallet-row">
             <span>CKB network</span>
             <strong>{ckbBalance ? `${formatCkb(ckbBalance.capacityCkb)} CKB` : "Syncing"}</strong>
+          </div>
+          <div className="wallet-row">
+            <span>{balanceSyncing ? "Syncing" : "Auto-sync"}</span>
+            <strong>{lastBalanceSync ? formatSyncTime(lastBalanceSync) : "Starting"}</strong>
           </div>
           <div className="managed-wallet-row">
             <div>
@@ -303,7 +446,7 @@ function App() {
             <h2>{titleFor(view)}</h2>
           </div>
           <div className="topbar-actions">
-            <button className="icon-button" onClick={() => void runAction("Refreshing workspace...", () => refresh())} title="Refresh">
+            <button className="icon-button" onClick={() => void runAction("Refreshing workspace...", refreshWorkspace)} title="Refresh">
               <RefreshCcw size={18} />
             </button>
           </div>
@@ -320,7 +463,7 @@ function App() {
             view={view}
             setView={setView}
             runAction={runAction}
-            refresh={refresh}
+            refresh={refreshWorkspace}
           />
         )}
 
@@ -333,7 +476,7 @@ function App() {
             view={view}
             setView={setView}
             runAction={runAction}
-            refresh={refresh}
+            refresh={refreshWorkspace}
           />
         )}
 
@@ -1271,6 +1414,69 @@ function formatCkb(amount: string) {
   return trimmedFraction ? `${whole}.${trimmedFraction}` : whole;
 }
 
+function formatSyncTime(value: string) {
+  return new Date(value).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function decimalAmount(value?: string) {
+  const parsed = Number(value ?? "0");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isFundingReady(usdwBalance?: ApiUsdwBalance, ckbBalance?: ApiCkbBalance) {
+  return (
+    decimalAmount(usdwBalance?.amount) >= usdwReadyTarget &&
+    decimalAmount(ckbBalance?.capacityCkb) >= ckbReadyTarget
+  );
+}
+
+function describeFundingStatus(usdwBalance?: ApiUsdwBalance, ckbBalance?: ApiCkbBalance): FundingStatus {
+  if (!usdwBalance || !ckbBalance) {
+    return initialFundingStatus;
+  }
+
+  const usdwAmount = decimalAmount(usdwBalance.amount);
+  const ckbAmount = decimalAmount(ckbBalance.capacityCkb);
+
+  if (usdwAmount >= usdwReadyTarget && ckbAmount >= ckbReadyTarget) {
+    return {
+      phase: "ready",
+      title: "Wallet ready",
+      detail: "Your test balances are synced and ready for the POC flow.",
+    };
+  }
+
+  if (ckbAmount < ckbReadyTarget) {
+    return {
+      phase: "manual",
+      title: "CKB top-up needed",
+      detail: `Copy this wallet address and add testnet CKB from ${faucetUrl}. The app keeps checking automatically.`,
+    };
+  }
+
+  return {
+    phase: "confirming",
+    title: "Funding confirming",
+    detail: "USDW funding is still confirming. This panel updates automatically.",
+  };
+}
+
+function deriveFundingStatus(
+  current: FundingStatus,
+  usdwBalance?: ApiUsdwBalance,
+  ckbBalance?: ApiCkbBalance,
+) {
+  if (usdwBalance && ckbBalance) {
+    return describeFundingStatus(usdwBalance, ckbBalance);
+  }
+
+  return current;
+}
+
 function isAppRole(role: ApiRole): role is SessionRole {
   return role === "business" || role === "creator";
 }
@@ -1278,10 +1484,10 @@ function isAppRole(role: ApiRole): role is SessionRole {
 function humanError(error: unknown) {
   const message = error instanceof Error ? error.message : "Something went wrong.";
   if (/Insufficient CKB/i.test(message)) {
-    return "This managed wallet needs more testnet CKB before the payment can be sent. Copy the CKB wallet address from the sidebar and top it up from the Nervos Pudge Faucet: https://faucet.nervos.org/.";
+    return `This managed wallet needs more testnet CKB before the payment can be sent. Copy the CKB wallet address from the sidebar and top it up from the Nervos Pudge Faucet: ${faucetUrl}.`;
   }
   if (/gas sponsorship is not configured/i.test(message)) {
-    return "CKB gas sponsorship is not configured. Copy the CKB wallet address from the sidebar and top it up from the Nervos Pudge Faucet: https://faucet.nervos.org/.";
+    return `CKB gas sponsorship is not configured. Copy the CKB wallet address from the sidebar and top it up from the Nervos Pudge Faucet: ${faucetUrl}.`;
   }
   if (/Insufficient USDW|Insufficient coin/i.test(message)) {
     return "The SME needs more USDW before this escrow can be funded.";

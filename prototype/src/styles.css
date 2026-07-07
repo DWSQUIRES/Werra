@@ -1299,61 +1299,6 @@ textarea:focus {
   font-size: 17px;
 }
 
-.funding-actions,
-.funding-account-list,
-.funding-account {
-  display: grid;
-  gap: 12px;
-}
-
-.funding-account {
-  min-width: 0;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--panel);
-  padding: 12px;
-}
-
-.funding-account-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.funding-account-heading > div {
-  min-width: 0;
-}
-
-.funding-account-heading span {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 900;
-  text-transform: uppercase;
-}
-
-.funding-account-heading strong {
-  display: block;
-  overflow: hidden;
-  margin-top: 4px;
-  font-size: 14px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.funding-account code {
-  display: block;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--field);
-  color: var(--muted);
-  padding: 9px 10px;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .status.awaiting,
 .status.awaiting.payment,
 .status.in,

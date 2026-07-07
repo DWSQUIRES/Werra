@@ -21,7 +21,8 @@ test("each role only sees its own workspace", async ({ page }) => {
 
   await page.getByRole("button", { name: "Sign out" }).click();
   await page.getByRole("button", { name: /Continue as Werra Admin/ }).click();
-  await expect(page.getByRole("button", { name: "Balances" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Support" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Balances" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Post Brief" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Find Work" })).toHaveCount(0);
 });
@@ -417,128 +418,4 @@ test("admin can settle an open dispute in the support queue", async ({ page }) =
   await page.getByRole("button", { name: "Refund SME" }).click();
   await expect(page.getByText("Workspace updated.")).toBeVisible();
   await expect(page.getByText("No open disputes")).toBeVisible();
-});
-
-test("admin can prepare public test funding from balances", async ({ page }) => {
-  let gasFunded = false;
-  const usdwAccounts: string[] = [];
-  const users = [
-    {
-      id: "usr-sme",
-      email: "demo-sme@werra.local",
-      role: "business",
-      wallet: { address: "ckt1sme", publicKey: "0x", lockScript: {}, createdAt: "2026-07-03T00:00:00.000Z" },
-      createdAt: "2026-07-03T00:00:00.000Z",
-    },
-    {
-      id: "usr-creator",
-      email: "demo-creator@werra.local",
-      role: "creator",
-      wallet: { address: "ckt1creator", publicKey: "0x", lockScript: {}, createdAt: "2026-07-03T00:00:00.000Z" },
-      createdAt: "2026-07-03T00:00:00.000Z",
-    },
-    {
-      id: "usr-admin",
-      email: "demo-issuer@werra.local",
-      role: "admin",
-      wallet: { address: "ckt1admin", publicKey: "0x", lockScript: {}, createdAt: "2026-07-03T00:00:00.000Z" },
-      createdAt: "2026-07-03T00:00:00.000Z",
-    },
-    {
-      id: "usr-escrow",
-      email: "demo-escrow@werra.local",
-      role: "admin",
-      wallet: { address: "ckt1escrow", publicKey: "0x", lockScript: {}, createdAt: "2026-07-03T00:00:00.000Z" },
-      createdAt: "2026-07-03T00:00:00.000Z",
-    },
-  ];
-
-  await page.route("**/api/poc/wallets", async (route) => {
-    await route.fulfill({
-      json: {
-        wallets: {
-          business: { label: "Demo SME", user: users[0] },
-          creator: { label: "Demo Creator", user: users[1] },
-          issuer: { label: "USDW issuer", user: users[2] },
-          escrow: { label: "Werra escrow custody", user: users[3] },
-        },
-      },
-    });
-  });
-  await page.route("**/api/users", async (route) => {
-    await route.fulfill({ json: { users } });
-  });
-  await page.route("**/api/marketplace", async (route) => {
-    await route.fulfill({ json: { briefs: [], bids: [], agreements: [], escrows: [], deliveries: [], disputes: [] } });
-  });
-  await page.route("**/api/users/*/usdw-balance", async (route) => {
-    await route.fulfill({
-      json: {
-        balance: {
-          symbol: "USDW",
-          decimals: 6,
-          amountUnits: "0",
-          amount: "0",
-          checkedAt: "2026-07-03T00:00:00.000Z",
-        },
-      },
-    });
-  });
-  await page.route("**/api/users/*/ckb-balance", async (route) => {
-    await route.fulfill({
-      json: {
-        balance: {
-          capacityShannons: "0",
-          capacityCkb: gasFunded ? "100" : "0",
-          checkedAt: "2026-07-03T00:00:00.000Z",
-          network: "testnet",
-        },
-      },
-    });
-  });
-  await page.route("**/api/poc/funding", async (route) => {
-    await route.fulfill({
-      json: {
-        ckbGasSponsor: {
-          enabled: true,
-          network: "testnet",
-          address: "ckt1sponsor",
-          capacityShannons: "1000000000000",
-          capacityCkb: "10000",
-          checkedAt: "2026-07-03T00:00:00.000Z",
-        },
-        recommended: {
-          ckbPerWallet: "100",
-          smeUsdw: "1000",
-          creatorUsdw: "100",
-        },
-      },
-    });
-  });
-  await page.route("**/api/poc/fund-ckb", async (route) => {
-    gasFunded = true;
-    await route.fulfill({ status: 201, json: { txHash: "0xgas", fundedWallets: 4, amountCkb: "100" } });
-  });
-  await page.route("**/api/poc/fund-usdw", async (route) => {
-    const body = await route.request().postDataJSON();
-    usdwAccounts.push(body.account);
-    await route.fulfill({ status: 201, json: { txHash: `0x${body.account}`, issued: true, targetAmount: body.amount, account: body.account } });
-  });
-
-  await page.evaluate(() => localStorage.clear());
-  await page.goto("/");
-  await page.getByRole("button", { name: /Continue as Werra Admin/ }).click();
-  await page.getByRole("button", { name: "Balances" }).click();
-
-  await expect(page.getByText("Managed test accounts")).toBeVisible();
-  await expect(page.getByText("ckt1sme")).toBeVisible();
-
-  const gasButton = page.getByRole("button", { name: "Fund CKB gas" });
-  await expect(gasButton).toBeEnabled();
-  await gasButton.click();
-  await expect.poll(() => gasFunded).toBe(true);
-
-  await page.getByRole("button", { name: "Add SME USDW" }).click();
-  await page.getByRole("button", { name: "Add creator USDW" }).click();
-  await expect.poll(() => usdwAccounts).toEqual(["business", "creator"]);
 });

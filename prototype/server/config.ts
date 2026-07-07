@@ -35,6 +35,7 @@ export const config = {
   storeKey: process.env.WERRA_STORE_KEY ?? "werra-poc",
   chainNetwork: (process.env.CKB_NETWORK ?? "testnet") as ChainNetwork,
   ckbRpcUrl: process.env.CKB_RPC_URL,
+  ckbFaucetPrivateKey: process.env.WERRA_CKB_FAUCET_PRIVATE_KEY,
   encryptionKey: crypto
     .createHash("sha256")
     .update(process.env.WERRA_WALLET_ENCRYPTION_KEY ?? defaultDevSecret)

@@ -4,6 +4,7 @@ import {
   Check,
   CircleDollarSign,
   Clock3,
+  Copy,
   FileCheck2,
   Gavel,
   HandCoins,
@@ -25,11 +26,14 @@ import {
   bootstrapPocWallets,
   createApiBid,
   createApiBrief,
+  fundPocCkb,
+  fundPocUsdw,
   fundUsdwEscrow,
+  getApiCkbBalance,
   getManagedUsers,
   getMarketplace,
+  getPocFunding,
   getUsdwBalance,
-  issueUsdw,
   openApiDispute,
   releaseUsdwEscrow,
   settleApiDispute,
@@ -37,10 +41,12 @@ import {
   type ApiAgreement,
   type ApiBid,
   type ApiBrief,
+  type ApiCkbBalance,
   type ApiDelivery,
   type ApiDispute,
   type ApiEscrow,
   type ApiMarketplace,
+  type ApiPocFunding,
   type ApiRole,
   type ApiUsdwBalance,
   type ApiUser,
@@ -98,6 +104,8 @@ function App() {
   const [users, setUsers] = useState<ApiUser[]>([]);
   const [market, setMarket] = useState<ApiMarketplace>(emptyMarket);
   const [balances, setBalances] = useState<Record<string, ApiUsdwBalance>>({});
+  const [ckbBalances, setCkbBalances] = useState<Record<string, ApiCkbBalance>>({});
+  const [funding, setFunding] = useState<ApiPocFunding | null>(null);
   const [sessionEmail, setSessionEmail] = useState(() => localStorage.getItem(sessionKey) ?? "");
   const [view, setView] = useState<ViewKey>("overview");
   const [notice, setNotice] = useState("Preparing Werra workspace...");
@@ -123,6 +131,23 @@ function App() {
         relevant.map(async (user) => [user.id, await getUsdwBalance(user.id)] as const),
       );
       setBalances(Object.fromEntries(entries));
+
+      const ckbResults = await Promise.allSettled(
+        relevant.map(async (user) => [user.id, await getApiCkbBalance(user.id)] as const),
+      );
+      setCkbBalances(
+        Object.fromEntries(
+          ckbResults
+            .filter((result): result is PromiseFulfilledResult<readonly [string, ApiCkbBalance]> => result.status === "fulfilled")
+            .map((result) => result.value),
+        ),
+      );
+
+      try {
+        setFunding(await getPocFunding());
+      } catch (error) {
+        console.warn("Funding status sync failed", error);
+      }
     }
   }
 
@@ -293,6 +318,8 @@ function App() {
             users={users}
             context={context}
             balances={balances}
+            ckbBalances={ckbBalances}
+            funding={funding}
             busy={busy}
             view={view}
             setView={setView}
@@ -596,11 +623,20 @@ function CreatorWorkspace(props: WorkspaceProps & { user: ApiUser; balance?: Api
   );
 }
 
-function AdminWorkspace(props: WorkspaceProps & { user: ApiUser; users: ApiUser[]; balances: Record<string, ApiUsdwBalance> }) {
-  const { user, users, context, balances, view, busy, runAction, refresh } = props;
+function AdminWorkspace(
+  props: WorkspaceProps & {
+    user: ApiUser;
+    users: ApiUser[];
+    balances: Record<string, ApiUsdwBalance>;
+    ckbBalances: Record<string, ApiCkbBalance>;
+    funding: ApiPocFunding | null;
+  },
+) {
+  const { user, users, context, balances, ckbBalances, funding, view, busy, runAction, refresh } = props;
   const business = users.find((user) => user.email === demoAccounts.business.email);
   const creator = users.find((user) => user.email === demoAccounts.creator.email);
   const issuer = users.find((user) => user.email === demoAccounts.admin.email);
+  const escrow = users.find((user) => user.email === "demo-escrow@werra.local");
   const disputes = newestFirst(context.disputes.filter((dispute) => dispute.status === "OPEN"));
   const agreements = newestFirst(context.agreements, "updatedAt");
   const inEscrow = agreements
@@ -657,31 +693,92 @@ function AdminWorkspace(props: WorkspaceProps & { user: ApiUser; users: ApiUser[
         <section className="metric-grid">
           <Metric icon={<CircleDollarSign />} label="SME balance" value={`${business ? balances[business.id]?.amount ?? "0" : "0"} USDW`} />
           <Metric icon={<HandCoins />} label="Creator balance" value={`${creator ? balances[creator.id]?.amount ?? "0" : "0"} USDW`} />
-          <Metric icon={<Banknote />} label="Werra fees" value={`${issuer ? balances[issuer.id]?.amount ?? "0" : "0"} USDW`} />
+          <Metric icon={<Banknote />} label="Sponsor gas" value={funding?.ckbGasSponsor.enabled ? `${funding.ckbGasSponsor.capacityCkb ?? "0"} CKB` : "Not set"} />
           <Metric icon={<ShieldCheck />} label="Protected" value={`${inEscrow.toFixed(2)} USDW`} />
         </section>
-        <Panel title="Test balances">
-          <div className="action-row">
-            <div>
-              <h3>Top up SME test balance</h3>
-              <p className="muted">Adds spendable USDW to the demo SME account for marketplace testing.</p>
+
+        <section className="two-column wide-left">
+          <Panel title="Test funding">
+            <div className="funding-actions">
+              <div className="action-row">
+                <div>
+                  <h3>Fund gas for test wallets</h3>
+                  <p className="muted">
+                    Sends testnet CKB to the SME, creator, issuer, and escrow wallets from the configured sponsor wallet.
+                  </p>
+                </div>
+                <button
+                  className="primary-button"
+                  disabled={Boolean(busy) || !funding?.ckbGasSponsor.enabled}
+                  onClick={() =>
+                    runAction("Funding test wallet gas...", async () => {
+                      await fundPocCkb(user.id, funding?.recommended.ckbPerWallet ?? "100");
+                      await refresh();
+                    })
+                  }
+                >
+                  <Wallet size={16} />
+                  <span>Fund CKB gas</span>
+                </button>
+              </div>
+
+              {!funding?.ckbGasSponsor.enabled && (
+                <div className="notice">
+                  <ShieldCheck size={18} />
+                  <span>Gas sponsor is not configured. Fund the listed addresses manually, then refresh balances.</span>
+                </div>
+              )}
+
+              <div className="action-row">
+                <div>
+                  <h3>Top up SME balance</h3>
+                  <p className="muted">Adds spendable USDW to the demo SME account for posting and awarding test gigs.</p>
+                </div>
+                <button
+                  className="primary-button"
+                  disabled={Boolean(busy) || !business}
+                  onClick={() =>
+                    runAction("Adding SME test balance...", async () => {
+                      await fundPocUsdw(user.id, "business", funding?.recommended.smeUsdw ?? "1000");
+                      await refresh();
+                    })
+                  }
+                >
+                  <Plus size={16} />
+                  <span>Add SME USDW</span>
+                </button>
+              </div>
+
+              <div className="action-row">
+                <div>
+                  <h3>Top up creator balance</h3>
+                  <p className="muted">Adds USDW to the creator wallet for balance visibility during public testing.</p>
+                </div>
+                <button
+                  className="secondary-button"
+                  disabled={Boolean(busy) || !creator}
+                  onClick={() =>
+                    runAction("Adding creator test balance...", async () => {
+                      await fundPocUsdw(user.id, "creator", funding?.recommended.creatorUsdw ?? "100");
+                      await refresh();
+                    })
+                  }
+                >
+                  <Plus size={16} />
+                  <span>Add creator USDW</span>
+                </button>
+              </div>
             </div>
-            <button
-              className="primary-button"
-              disabled={Boolean(busy) || !business}
-              onClick={() =>
-                runAction("Adding SME test balance...", async () => {
-                  if (!business) return;
-                  await issueUsdw(business.id, "1000");
-                  await refresh();
-                })
-              }
-            >
-              <Plus size={16} />
-              <span>Add 1000 USDW</span>
-            </button>
-          </div>
-        </Panel>
+          </Panel>
+
+          <Panel title="Managed test accounts">
+            <FundingAccountList
+              users={[business, creator, issuer, escrow].filter(Boolean) as ApiUser[]}
+              balances={balances}
+              ckbBalances={ckbBalances}
+            />
+          </Panel>
+        </section>
       </div>
     );
   }
@@ -1213,6 +1310,49 @@ function DisputeDetails({ dispute, context }: { dispute: ApiDispute; context: Ap
   );
 }
 
+function FundingAccountList({
+  users,
+  balances,
+  ckbBalances,
+}: {
+  users: ApiUser[];
+  balances: Record<string, ApiUsdwBalance>;
+  ckbBalances: Record<string, ApiCkbBalance>;
+}) {
+  if (users.length === 0) {
+    return <EmptyState icon={<Wallet />} title="No test wallets" text="Create the POC wallets before funding balances." />;
+  }
+
+  return (
+    <div className="funding-account-list">
+      {users.map((user) => (
+        <article key={user.id} className="funding-account">
+          <div className="funding-account-heading">
+            <div>
+              <span>{accountLabel(user)}</span>
+              <strong>{user.email}</strong>
+            </div>
+            <button
+              className="mini-button"
+              type="button"
+              onClick={() => void navigator.clipboard?.writeText(user.wallet.address)}
+              title="Copy address"
+            >
+              <Copy size={14} />
+              <span>Copy</span>
+            </button>
+          </div>
+          <div className="summary-grid">
+            <SummaryItem label="USDW" value={`${balances[user.id]?.amount ?? "0"} USDW`} />
+            <SummaryItem label="CKB gas" value={`${ckbBalances[user.id]?.capacityCkb ?? "Checking"} CKB`} />
+          </div>
+          <code>{user.wallet.address}</code>
+        </article>
+      ))}
+    </div>
+  );
+}
+
 function Panel({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   return (
     <section className="panel">
@@ -1346,10 +1486,21 @@ function displayName(user?: ApiUser) {
   return user.email.split("@")[0];
 }
 
+function accountLabel(user: ApiUser) {
+  if (user.email === demoAccounts.business.email) return "Demo SME";
+  if (user.email === demoAccounts.creator.email) return "Demo Creator";
+  if (user.email === demoAccounts.admin.email) return "Werra Admin";
+  if (user.email === "demo-escrow@werra.local") return "Escrow custody";
+  return displayName(user);
+}
+
 function humanError(error: unknown) {
   const message = error instanceof Error ? error.message : "Something went wrong.";
   if (/Insufficient CKB/i.test(message)) {
     return "A test funding wallet needs more network balance before this payment can be sent.";
+  }
+  if (/gas sponsorship is not configured/i.test(message)) {
+    return "CKB gas sponsorship is not configured. Add a funded testnet sponsor wallet or fund the addresses manually.";
   }
   if (/Insufficient USDW|Insufficient coin/i.test(message)) {
     return "The SME needs more USDW before this escrow can be funded.";

@@ -112,6 +112,24 @@ export type ApiCkbBalance = {
   network: string;
 };
 
+export type ApiCkbGasSponsor = {
+  enabled: boolean;
+  network: string;
+  address?: string;
+  capacityShannons?: string;
+  capacityCkb?: string;
+  checkedAt?: string;
+};
+
+export type ApiPocFunding = {
+  ckbGasSponsor: ApiCkbGasSponsor;
+  recommended: {
+    ckbPerWallet: string;
+    smeUsdw: string;
+    creatorUsdw: string;
+  };
+};
+
 export type ApiUsdwBalance = {
   symbol: "USDW";
   decimals: number;
@@ -256,6 +274,35 @@ export async function getUsdwBalance(userId: string): Promise<ApiUsdwBalance> {
   const response = await fetch(`/api/users/${userId}/usdw-balance`);
   const data = await parseJson<{ balance: ApiUsdwBalance }>(response);
   return data.balance;
+}
+
+export async function getPocFunding(): Promise<ApiPocFunding> {
+  const response = await fetch("/api/poc/funding");
+  return parseJson<ApiPocFunding>(response);
+}
+
+export async function fundPocCkb(adminId: string, amount: string): Promise<string | null> {
+  const response = await fetch("/api/poc/fund-ckb", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ adminId, amount }),
+  });
+  const data = await parseJson<{ txHash: string | null; fundedWallets: number; amountCkb: string }>(response);
+  return data.txHash;
+}
+
+export async function fundPocUsdw(
+  adminId: string,
+  account: "business" | "creator",
+  amount: string,
+): Promise<string | null> {
+  const response = await fetch("/api/poc/fund-usdw", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ adminId, account, amount }),
+  });
+  const data = await parseJson<{ txHash: string | null; issued: boolean; targetAmount: string; account: string }>(response);
+  return data.txHash;
 }
 
 export async function issueUsdw(recipientId: string, amount: string): Promise<string> {

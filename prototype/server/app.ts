@@ -1,7 +1,7 @@
 import express from "express";
 import { z } from "zod";
 
-import { getWalletCkbBalance } from "./ckb.js";
+import { fundManagedWalletsCkb, getCkbFaucetStatus, getWalletCkbBalance } from "./ckb.js";
 import { config } from "./config.js";
 import {
   awardBid,
@@ -47,6 +47,27 @@ const settleDisputeSchema = z.object({
   adminId: z.string().min(1),
   decision: z.enum(["release", "refund"]),
 });
+
+const fundPocCkbSchema = z.object({
+  adminId: z.string().min(1),
+  amount: z.string().min(1).default("100"),
+});
+
+const fundPocUsdwSchema = z.object({
+  adminId: z.string().min(1),
+  account: z.enum(["business", "creator"]),
+  amount: z.string().min(1),
+});
+
+function assertAdminUser(data: Awaited<ReturnType<typeof readStore>>, adminId: string) {
+  const admin = data.users.find((user) => user.id === adminId);
+
+  if (!admin || admin.role !== "admin") {
+    throw new Error("Only a Werra admin can perform this action");
+  }
+
+  return admin;
+}
 
 async function assertBidHasFundingReady(bidId: string, businessId: string) {
   const data = await readStore();
@@ -222,6 +243,7 @@ export function createApp() {
       storeDriver: config.storeDriver,
       persistentStore: config.storeDriver === "postgres",
       defaultDevSecret: config.usingDefaultDevSecret,
+      ckbGasSponsor: Boolean(config.ckbFaucetPrivateKey),
     });
   });
 
@@ -241,6 +263,7 @@ export function createApp() {
       persistentStore: config.storeDriver === "postgres",
       hasDatabaseUrl: Boolean(config.postgresUrl),
       hasWalletEncryptionKey: !config.usingDefaultDevSecret,
+      hasCkbGasSponsor: Boolean(config.ckbFaucetPrivateKey),
     });
   });
 
@@ -266,6 +289,68 @@ export function createApp() {
     try {
       const wallets = await ensurePocWallets();
       response.status(201).json({ wallets });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/poc/funding", async (_request, response, next) => {
+    try {
+      response.json({
+        ckbGasSponsor: await getCkbFaucetStatus(),
+        recommended: {
+          ckbPerWallet: "100",
+          smeUsdw: "1000",
+          creatorUsdw: "100",
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/poc/fund-ckb", async (request, response, next) => {
+    try {
+      const input = fundPocCkbSchema.parse(request.body);
+      const data = await readStore();
+      assertAdminUser(data, input.adminId);
+
+      const result = await fundManagedWalletsCkb([
+        { wallet: requirePocUser(data, "business").wallet, amount: input.amount },
+        { wallet: requirePocUser(data, "creator").wallet, amount: input.amount },
+        { wallet: requirePocUser(data, "issuer").wallet, amount: input.amount },
+        { wallet: requirePocUser(data, "escrow").wallet, amount: input.amount },
+      ]);
+
+      response.status(result.txHash ? 201 : 200).json({ ...result, amountCkb: input.amount });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/poc/fund-usdw", async (request, response, next) => {
+    try {
+      const input = fundPocUsdwSchema.parse(request.body);
+      const data = await readStore();
+      assertAdminUser(data, input.adminId);
+
+      const issuer = requirePocUser(data, "issuer");
+      const recipient = requirePocUser(data, input.account);
+      const targetUnits = parseUsdwAmount(input.amount);
+      const balance = await getUsdwBalance(recipient.wallet, issuer.wallet);
+
+      if (BigInt(balance.amountUnits) >= targetUnits) {
+        response.json({ txHash: null, issued: false, targetAmount: input.amount, account: input.account });
+        return;
+      }
+
+      const txHash = await issueUsdw({
+        issuerWallet: issuer.wallet,
+        recipientWallet: recipient.wallet,
+        amountUnits: targetUnits,
+      });
+
+      response.status(201).json({ txHash, issued: true, targetAmount: input.amount, account: input.account });
     } catch (error) {
       next(error);
     }

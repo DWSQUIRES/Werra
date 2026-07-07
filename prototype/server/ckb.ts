@@ -58,7 +58,7 @@ export async function getWalletCkbBalance(wallet: Pick<ManagedWallet, "lockScrip
   };
 }
 
-function walletLock(wallet: ManagedWallet) {
+export function walletLock(wallet: Pick<ManagedWallet, "lockScript">) {
   return ccc.Script.from(wallet.lockScript);
 }
 
@@ -78,12 +78,38 @@ function parseCkbAmount(amount: string | number) {
   return capacity;
 }
 
+export type PlannedCkbFundingOutput = {
+  wallet: ManagedWallet;
+  capacity: bigint;
+};
+
 function getFaucetSigner() {
   if (!config.ckbFaucetPrivateKey) {
     throw new Error("CKB gas sponsorship is not configured for this deployment");
   }
 
   return new ccc.SignerCkbPrivateKey(ckbClient, config.ckbFaucetPrivateKey);
+}
+
+export async function getConfiguredFaucetWallet(): Promise<ManagedWallet | null> {
+  if (!config.ckbFaucetPrivateKey) {
+    return null;
+  }
+
+  const signer = getFaucetSigner();
+  const address = await signer.getAddressObjSecp256k1();
+
+  return {
+    address: address.toString(),
+    publicKey: signer.publicKey,
+    lockScript: {
+      codeHash: address.script.codeHash,
+      hashType: address.script.hashType,
+      args: address.script.args,
+    },
+    encryptedPrivateKey: encryptSecret(config.ckbFaucetPrivateKey),
+    createdAt: new Date().toISOString(),
+  };
 }
 
 export async function getCkbFaucetStatus() {
@@ -108,34 +134,51 @@ export async function getCkbFaucetStatus() {
   };
 }
 
-export async function fundManagedWalletsCkb(outputs: Array<{ wallet: ManagedWallet; amount: string | number }>) {
+export async function planManagedWalletsCkbFunding(
+  outputs: Array<{ wallet: ManagedWallet; amount: string | number }>,
+): Promise<PlannedCkbFundingOutput[]> {
   if (outputs.length === 0) {
     throw new Error("At least one wallet is required for CKB funding");
   }
 
-  const faucet = getFaucetSigner();
-  const plannedOutputs = [];
+  const plannedOutputs: PlannedCkbFundingOutput[] = [];
 
   for (const output of outputs) {
     const targetCapacity = parseCkbAmount(output.amount);
     const currentCapacity = await ckbClient.getBalanceSingle(walletLock(output.wallet));
+    const requiredCapacity = targetCapacity - currentCapacity;
 
-    if (currentCapacity < targetCapacity) {
-      plannedOutputs.push({ wallet: output.wallet, capacity: targetCapacity });
+    if (requiredCapacity > 0n) {
+      plannedOutputs.push({
+        wallet: output.wallet,
+        capacity: requiredCapacity < minimumCellCapacity ? minimumCellCapacity : requiredCapacity,
+      });
     }
   }
+
+  return plannedOutputs;
+}
+
+export function buildCkbFundingOutput(output: PlannedCkbFundingOutput) {
+  return {
+    capacity: output.capacity,
+    lock: walletLock(output.wallet),
+  };
+}
+
+export async function fundManagedWalletsCkb(outputs: Array<{ wallet: ManagedWallet; amount: string | number }>) {
+  const plannedOutputs = await planManagedWalletsCkbFunding(outputs);
 
   if (plannedOutputs.length === 0) {
     return { txHash: null, fundedWallets: 0 };
   }
 
+  const faucet = getFaucetSigner();
+
   const tx = ccc.Transaction.from({});
 
   plannedOutputs.forEach((output) => {
-    tx.addOutput({
-      capacity: output.capacity,
-      lock: walletLock(output.wallet),
-    });
+    tx.addOutput(buildCkbFundingOutput(output));
   });
 
   await tx.completeInputsByCapacity(faucet);

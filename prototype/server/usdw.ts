@@ -1,7 +1,7 @@
 import { ccc } from "@ckb-ccc/core";
 
 import { decryptSecret } from "./crypto.js";
-import { ckbClient } from "./ckb.js";
+import { buildCkbFundingOutput, ckbClient, type PlannedCkbFundingOutput } from "./ckb.js";
 import type { ManagedWallet } from "./types.js";
 
 export const USDW = {
@@ -144,6 +144,32 @@ export async function issueUsdw({
 
   await tx.addCellDepsOfKnownScripts(ckbClient, ccc.KnownScript.XUdt);
   tx.addOutput(buildUdtOutput({ wallet: recipientWallet, amountUnits }, typeScript));
+  await tx.completeInputsByCapacity(issuer);
+  await tx.completeFeeBy(issuer);
+
+  return issuer.sendTransaction(tx);
+}
+
+export async function issueUsdwAndFundCkb({
+  issuerWallet,
+  usdwOutputs,
+  ckbOutputs,
+}: {
+  issuerWallet: ManagedWallet;
+  usdwOutputs: UsdwTransferOutput[];
+  ckbOutputs: PlannedCkbFundingOutput[];
+}) {
+  if (usdwOutputs.length === 0 && ckbOutputs.length === 0) {
+    return null;
+  }
+
+  const issuer = walletSigner(issuerWallet);
+  const typeScript = await getUsdwTypeScript(issuerWallet);
+  const tx = ccc.Transaction.from({});
+
+  await tx.addCellDepsOfKnownScripts(ckbClient, ccc.KnownScript.XUdt);
+  ckbOutputs.forEach((output) => tx.addOutput(buildCkbFundingOutput(output)));
+  usdwOutputs.forEach((output) => tx.addOutput(buildUdtOutput(output, typeScript)));
   await tx.completeInputsByCapacity(issuer);
   await tx.completeFeeBy(issuer);
 

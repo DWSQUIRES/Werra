@@ -26,6 +26,28 @@ test("each role only sees its own workspace", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Find Work" })).toHaveCount(0);
 });
 
+test("public tester can prepare funded wallets before choosing a role", async ({ page }) => {
+  let prepared = false;
+
+  await page.route("**/api/poc/prepare-test-funds", async (route) => {
+    prepared = true;
+    await route.fulfill({
+      status: 201,
+      json: {
+        ckb: { txHash: "0xckb", fundedWallets: 4, targetAmount: "500" },
+        usdw: [
+          { account: "business", txHash: "0xbusiness", issued: true, issuedAmount: "1000", targetAmount: "1000" },
+          { account: "creator", txHash: "0xcreator", issued: true, issuedAmount: "1000", targetAmount: "1000" },
+        ],
+      },
+    });
+  });
+
+  await page.getByRole("button", { name: "Prepare test wallets" }).click();
+  await expect.poll(() => prepared).toBe(true);
+  await expect(page.getByText("Workspace updated.")).toBeVisible();
+});
+
 test("SME posts a brief, creator applies, and SME awards the creator", async ({ page }) => {
   const title = `Playwright content brief ${Date.now()}`;
 

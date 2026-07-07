@@ -19,7 +19,6 @@ That single command will:
 - create local managed demo wallets
 - print the CKB testnet addresses to fund
 - start the frontend
-- auto-issue `1000 USDW` to the Demo SME once the issuer wallet has CKB
 
 Open:
 
@@ -40,7 +39,7 @@ These are testnet wallets generated locally on the tester's machine. Do not send
 
 ## Hosted public test funding
 
-For a public Vercel preview, the easiest path is to configure a small CKB testnet gas sponsor wallet once, then use the Werra Admin screen to fund test accounts.
+For a public Vercel preview, configure one funded CKB testnet sponsor wallet. The first screen then has a `Prepare test wallets` button that funds the POC for testers.
 
 Add this environment variable to the Vercel project:
 
@@ -51,14 +50,12 @@ WERRA_CKB_FAUCET_PRIVATE_KEY=<funded CKB testnet private key>
 Fund that sponsor wallet with testnet CKB only. After deployment:
 
 1. Open the app.
-2. Continue as `Werra Admin`.
-3. Open `Balances`.
-4. Click `Fund CKB gas`.
-5. Click `Add SME USDW`.
+2. Click `Prepare test wallets`.
+3. Continue as `SME` or `Creator` and run the test flow.
 
-The gas action sends testnet CKB to the managed SME, creator, issuer, and escrow wallets. The USDW action mints Werra test USD to the SME so the SME can award and fund creator gigs during public testing.
+The setup action targets `500 CKB` for each managed POC wallet and `1000 USDW` for both the SME and creator test accounts. It is idempotent: if the balances already meet the target, it will not keep issuing or sending funds.
 
-If `WERRA_CKB_FAUCET_PRIVATE_KEY` is not configured, the `Balances` screen still shows the managed test wallet addresses. Fund those addresses manually with CKB testnet funds, then use `Add SME USDW` after the issuer/admin wallet has enough CKB to issue the test token.
+If `WERRA_CKB_FAUCET_PRIVATE_KEY` is not configured, the setup button cannot sponsor gas. The `Werra Admin` > `Balances` screen still shows the managed test wallet addresses for manual funding.
 
 ## Test flow
 
@@ -107,7 +104,7 @@ For persistent hosted storage on Vercel Hobby, attach a Neon Postgres database f
 
 If `WERRA_STORE_DRIVER=postgres` is set without `DATABASE_URL`, the API will fail fast instead of silently using ephemeral storage. Without Postgres configuration, local development still uses the JSON store under `prototype/.werra-poc`.
 
-For a funded hosted test, open the deployed app once, then check `/api/poc/wallets` on the same deployment to view the generated testnet addresses. Fund only with CKB testnet funds.
+For a funded hosted test, add `WERRA_CKB_FAUCET_PRIVATE_KEY`, fund the sponsor address with CKB testnet funds, redeploy, then click `Prepare test wallets` from the first screen.
 
 ## Notes
 

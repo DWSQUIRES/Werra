@@ -1,7 +1,13 @@
 import express from "express";
 import { z } from "zod";
 
-import { fundManagedWalletsCkb, getCkbFaucetStatus, getWalletCkbBalance } from "./ckb.js";
+import {
+  fundManagedWalletsCkb,
+  getCkbFaucetStatus,
+  getConfiguredFaucetWallet,
+  getWalletCkbBalance,
+  planManagedWalletsCkbFunding,
+} from "./ckb.js";
 import { config } from "./config.js";
 import {
   awardBid,
@@ -21,10 +27,14 @@ import {
   getUsdwBalance,
   getUsdwTokenInfo,
   issueUsdw,
+  issueUsdwAndFundCkb,
+  formatUsdwAmount,
   parseUsdwAmount,
   transferUsdw,
+  type UsdwTransferOutput,
   usdwReleaseFeeReserveShannons,
 } from "./usdw.js";
+import type { ManagedWallet } from "./types.js";
 
 const issueUsdwSchema = z.object({
   recipientId: z.string().min(1),
@@ -59,6 +69,11 @@ const fundPocUsdwSchema = z.object({
   amount: z.string().min(1),
 });
 
+const preparePocFundingSchema = z.object({
+  ckbAmount: z.string().min(1).default("500"),
+  usdwAmount: z.string().min(1).default("1000"),
+});
+
 function assertAdminUser(data: Awaited<ReturnType<typeof readStore>>, adminId: string) {
   const admin = data.users.find((user) => user.id === adminId);
 
@@ -69,12 +84,80 @@ function assertAdminUser(data: Awaited<ReturnType<typeof readStore>>, adminId: s
   return admin;
 }
 
+async function resolveUsdwIssuerWallet(data: Awaited<ReturnType<typeof readStore>>) {
+  return (await getConfiguredFaucetWallet()) ?? requirePocUser(data, "issuer").wallet;
+}
+
+async function planPocUsdwTopUp(
+  data: Awaited<ReturnType<typeof readStore>>,
+  issuerWallet: ManagedWallet,
+  account: "business" | "creator",
+  amount: string,
+) {
+  const recipient = requirePocUser(data, account);
+  const targetUnits = parseUsdwAmount(amount);
+  const balance = await getUsdwBalance(recipient.wallet, issuerWallet);
+  const currentUnits = BigInt(balance.amountUnits);
+
+  if (currentUnits >= targetUnits) {
+    return {
+      result: {
+        account,
+        txHash: null,
+        issued: false,
+        issuedAmount: "0",
+        targetAmount: amount,
+      },
+    };
+  }
+
+  const amountUnits = targetUnits - currentUnits;
+
+  return {
+    result: {
+      account,
+      txHash: null,
+      issued: true,
+      issuedAmount: formatUsdwAmount(amountUnits),
+      targetAmount: amount,
+    },
+    output: {
+      wallet: recipient.wallet,
+      amountUnits,
+    } satisfies UsdwTransferOutput,
+  };
+}
+
+async function topUpPocUsdw(
+  data: Awaited<ReturnType<typeof readStore>>,
+  account: "business" | "creator",
+  amount: string,
+) {
+  const issuerWallet = await resolveUsdwIssuerWallet(data);
+  const plan = await planPocUsdwTopUp(data, issuerWallet, account, amount);
+
+  if (!plan.output) {
+    return plan.result;
+  }
+
+  const txHash = await issueUsdw({
+    issuerWallet,
+    recipientWallet: plan.output.wallet,
+    amountUnits: plan.output.amountUnits,
+  });
+
+  return {
+    ...plan.result,
+    txHash,
+  };
+}
+
 async function assertBidHasFundingReady(bidId: string, businessId: string) {
   const data = await readStore();
   const bid = data.bids.find((item) => item.id === bidId);
   const brief = bid ? data.briefs.find((item) => item.id === bid.briefId) : undefined;
   const business = data.users.find((user) => user.id === businessId);
-  const issuer = requirePocUser(data, "issuer");
+  const issuerWallet = await resolveUsdwIssuerWallet(data);
 
   if (!bid || bid.status !== "PENDING" || !brief || brief.status !== "OPEN") {
     throw new Error("Awardable bid not found");
@@ -85,7 +168,7 @@ async function assertBidHasFundingReady(bidId: string, businessId: string) {
   }
 
   const requiredUnits = parseUsdwAmount(bid.amountUsdi.toFixed(2));
-  const balance = await getUsdwBalance(business.wallet, issuer.wallet);
+  const balance = await getUsdwBalance(business.wallet, issuerWallet);
 
   if (BigInt(balance.amountUnits) < requiredUnits) {
     throw new Error("Insufficient USDW balance");
@@ -98,7 +181,7 @@ async function fundDraftEscrow(agreementId: string, businessId: string) {
   const escrow = data.escrows.find((item) => item.agreementId === agreementId);
   const business = data.users.find((user) => user.id === businessId);
   const escrowUser = requirePocUser(data, "escrow");
-  const issuer = requirePocUser(data, "issuer");
+  const issuerWallet = await resolveUsdwIssuerWallet(data);
 
   if (!agreement || !escrow || agreement.status !== "DRAFT" || escrow.status !== "DRAFT") {
     throw new Error("Draft agreement escrow not found");
@@ -110,7 +193,7 @@ async function fundDraftEscrow(agreementId: string, businessId: string) {
 
   const txHash = await transferUsdw({
     fromWallet: business.wallet,
-    issuerWallet: issuer.wallet,
+    issuerWallet,
     outputs: [
       {
         wallet: escrowUser.wallet,
@@ -151,7 +234,7 @@ async function settleDispute(disputeId: string, input: z.infer<typeof settleDisp
   const admin = data.users.find((user) => user.id === input.adminId);
   const business = agreement ? data.users.find((user) => user.id === agreement.businessId) : undefined;
   const creator = agreement ? data.users.find((user) => user.id === agreement.creatorId) : undefined;
-  const issuer = requirePocUser(data, "issuer");
+  const issuerWallet = await resolveUsdwIssuerWallet(data);
   const escrowUser = requirePocUser(data, "escrow");
 
   if (!dispute || dispute.status !== "OPEN") {
@@ -172,7 +255,7 @@ async function settleDispute(disputeId: string, input: z.infer<typeof settleDisp
 
   const txHash = await transferUsdw({
     fromWallet: escrowUser.wallet,
-    issuerWallet: issuer.wallet,
+    issuerWallet,
     outputs:
       input.decision === "release"
         ? [
@@ -181,7 +264,7 @@ async function settleDispute(disputeId: string, input: z.infer<typeof settleDisp
               amountUnits: parseUsdwAmount(agreement.creatorPayoutUsdi.toFixed(2)),
             },
             {
-              wallet: issuer.wallet,
+              wallet: issuerWallet,
               amountUnits: parseUsdwAmount(agreement.platformFeeUsdi.toFixed(2)),
             },
           ]
@@ -299,10 +382,58 @@ export function createApp() {
       response.json({
         ckbGasSponsor: await getCkbFaucetStatus(),
         recommended: {
-          ckbPerWallet: "100",
+          ckbPerWallet: "500",
           smeUsdw: "1000",
-          creatorUsdw: "100",
+          creatorUsdw: "1000",
         },
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/poc/prepare-test-funds", async (request, response, next) => {
+    try {
+      const input = preparePocFundingSchema.parse(request.body ?? {});
+      await ensurePocWallets();
+      const data = await readStore();
+      const issuerWallet = await getConfiguredFaucetWallet();
+
+      if (!issuerWallet) {
+        throw new Error("CKB gas sponsorship is not configured for this deployment");
+      }
+
+      const ckbOutputs = await planManagedWalletsCkbFunding([
+        { wallet: requirePocUser(data, "business").wallet, amount: input.ckbAmount },
+        { wallet: requirePocUser(data, "creator").wallet, amount: input.ckbAmount },
+        { wallet: requirePocUser(data, "issuer").wallet, amount: input.ckbAmount },
+        { wallet: requirePocUser(data, "escrow").wallet, amount: input.ckbAmount },
+      ]);
+      const usdwPlans = await Promise.all([
+        planPocUsdwTopUp(data, issuerWallet, "business", input.usdwAmount),
+        planPocUsdwTopUp(data, issuerWallet, "creator", input.usdwAmount),
+      ]);
+      const usdwOutputs = usdwPlans.flatMap((plan) => (plan.output ? [plan.output] : []));
+      const txHash = await issueUsdwAndFundCkb({
+        issuerWallet,
+        ckbOutputs,
+        usdwOutputs,
+      });
+
+      response.status(txHash ? 201 : 200).json({
+        ckb: {
+          txHash,
+          fundedWallets: ckbOutputs.length,
+          targetAmount: input.ckbAmount,
+        },
+        usdw: usdwPlans.map((plan) =>
+          plan.output
+            ? {
+                ...plan.result,
+                txHash,
+              }
+            : plan.result,
+        ),
       });
     } catch (error) {
       next(error);
@@ -333,24 +464,8 @@ export function createApp() {
       const input = fundPocUsdwSchema.parse(request.body);
       const data = await readStore();
       assertAdminUser(data, input.adminId);
-
-      const issuer = requirePocUser(data, "issuer");
-      const recipient = requirePocUser(data, input.account);
-      const targetUnits = parseUsdwAmount(input.amount);
-      const balance = await getUsdwBalance(recipient.wallet, issuer.wallet);
-
-      if (BigInt(balance.amountUnits) >= targetUnits) {
-        response.json({ txHash: null, issued: false, targetAmount: input.amount, account: input.account });
-        return;
-      }
-
-      const txHash = await issueUsdw({
-        issuerWallet: issuer.wallet,
-        recipientWallet: recipient.wallet,
-        amountUnits: targetUnits,
-      });
-
-      response.status(201).json({ txHash, issued: true, targetAmount: input.amount, account: input.account });
+      const result = await topUpPocUsdw(data, input.account, input.amount);
+      response.status(result.txHash ? 201 : 200).json(result);
     } catch (error) {
       next(error);
     }
@@ -376,13 +491,13 @@ export function createApp() {
     try {
       const data = await readStore();
       const user = data.users.find((item) => item.id === request.params.userId);
-      const issuer = requirePocUser(data, "issuer");
+      const issuerWallet = await resolveUsdwIssuerWallet(data);
 
       if (!user) {
         throw new Error("User not found");
       }
 
-      response.json({ balance: await getUsdwBalance(user.wallet, issuer.wallet) });
+      response.json({ balance: await getUsdwBalance(user.wallet, issuerWallet) });
     } catch (error) {
       next(error);
     }
@@ -391,8 +506,8 @@ export function createApp() {
   app.get("/api/usdw", async (_request, response, next) => {
     try {
       const data = await readStore();
-      const issuer = requirePocUser(data, "issuer");
-      response.json({ token: await getUsdwTokenInfo(issuer.wallet) });
+      const issuerWallet = await resolveUsdwIssuerWallet(data);
+      response.json({ token: await getUsdwTokenInfo(issuerWallet) });
     } catch (error) {
       next(error);
     }
@@ -402,7 +517,7 @@ export function createApp() {
     try {
       const input = issueUsdwSchema.parse(request.body);
       const data = await readStore();
-      const issuer = requirePocUser(data, "issuer");
+      const issuerWallet = await resolveUsdwIssuerWallet(data);
       const recipient = data.users.find((user) => user.id === input.recipientId);
 
       if (!recipient) {
@@ -410,7 +525,7 @@ export function createApp() {
       }
 
       const txHash = await issueUsdw({
-        issuerWallet: issuer.wallet,
+        issuerWallet,
         recipientWallet: recipient.wallet,
         amountUnits: parseUsdwAmount(input.amount),
       });
@@ -501,7 +616,7 @@ export function createApp() {
       const agreement = data.agreements.find((item) => item.id === request.params.agreementId);
       const escrow = data.escrows.find((item) => item.agreementId === request.params.agreementId);
       const creator = agreement ? data.users.find((user) => user.id === agreement.creatorId) : undefined;
-      const issuer = requirePocUser(data, "issuer");
+      const issuerWallet = await resolveUsdwIssuerWallet(data);
       const escrowUser = requirePocUser(data, "escrow");
 
       if (!agreement || !escrow || agreement.status !== "DELIVERED" || escrow.status !== "FUNDED") {
@@ -518,14 +633,14 @@ export function createApp() {
 
       const txHash = await transferUsdw({
         fromWallet: escrowUser.wallet,
-        issuerWallet: issuer.wallet,
+        issuerWallet,
         outputs: [
           {
             wallet: creator.wallet,
             amountUnits: parseUsdwAmount(agreement.creatorPayoutUsdi.toFixed(2)),
           },
           {
-            wallet: issuer.wallet,
+            wallet: issuerWallet,
             amountUnits: parseUsdwAmount(agreement.platformFeeUsdi.toFixed(2)),
           },
         ],

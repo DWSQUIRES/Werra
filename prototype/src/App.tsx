@@ -35,6 +35,7 @@ import {
   getPocFunding,
   getUsdwBalance,
   openApiDispute,
+  preparePocTestFunds,
   releaseUsdwEscrow,
   settleApiDispute,
   submitApiDelivery,
@@ -218,8 +219,15 @@ function App() {
         ready={ready}
         notice={notice}
         users={users}
+        busy={busy}
         onLogin={login}
         onRefresh={() => void boot()}
+        onPrepareTestFunds={() =>
+          void runAction("Preparing test wallets...", async () => {
+            await preparePocTestFunds();
+            await refresh();
+          })
+        }
       />
     );
   }
@@ -336,20 +344,36 @@ function LoginScreen({
   ready,
   notice,
   users,
+  busy,
   onLogin,
   onRefresh,
+  onPrepareTestFunds,
 }: {
   ready: boolean;
   notice: string;
   users: ApiUser[];
+  busy: string | null;
   onLogin: (role: SessionRole) => void;
   onRefresh: () => void;
+  onPrepareTestFunds: () => void;
 }) {
   return (
     <main className="login-shell">
       <section className="login-panel">
         <div className="brand login-brand">
           <h1 className="brand-wordmark">werra</h1>
+        </div>
+
+        <div className="login-setup-card">
+          <div>
+            <span>Public test setup</span>
+            <strong>Fund demo wallets</strong>
+            <small>One click prepares the POC with 500 CKB gas and 1000 USDW for test accounts.</small>
+          </div>
+          <button className="primary-button" disabled={!ready || Boolean(busy)} onClick={onPrepareTestFunds}>
+            {busy ? <RefreshCcw size={16} /> : <Wallet size={16} />}
+            <span>{busy ? "Preparing..." : "Prepare test wallets"}</span>
+          </button>
         </div>
 
         <div className="login-grid">
@@ -360,7 +384,7 @@ function LoginScreen({
               <button
                 key={role}
                 className="login-card"
-                disabled={!ready || !available}
+                disabled={!ready || !available || Boolean(busy)}
                 onClick={() => onLogin(role)}
               >
                 <span>{account.title}</span>

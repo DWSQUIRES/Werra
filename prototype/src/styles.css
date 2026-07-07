@@ -1020,6 +1020,39 @@ textarea:focus {
   gap: 8px;
 }
 
+.login-setup-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid #b9dccd;
+  border-radius: 7px;
+  background: var(--brand-soft);
+  padding: 14px;
+}
+
+.login-setup-card > div {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.login-setup-card span {
+  color: var(--brand-strong);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.login-setup-card strong {
+  font-size: 16px;
+}
+
+.login-setup-card small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 .login-card {
   display: grid;
   min-height: 0;
@@ -1406,6 +1439,7 @@ textarea:focus {
   }
 
   .action-row,
+  .login-setup-card,
   .login-footer {
     align-items: stretch;
     flex-direction: column;

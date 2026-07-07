@@ -130,6 +130,21 @@ export type ApiPocFunding = {
   };
 };
 
+export type ApiPocFundingSetup = {
+  ckb: {
+    txHash: string | null;
+    fundedWallets: number;
+    targetAmount: string;
+  };
+  usdw: Array<{
+    account: "business" | "creator";
+    txHash: string | null;
+    issued: boolean;
+    issuedAmount: string;
+    targetAmount: string;
+  }>;
+};
+
 export type ApiUsdwBalance = {
   symbol: "USDW";
   decimals: number;
@@ -303,6 +318,15 @@ export async function fundPocUsdw(
   });
   const data = await parseJson<{ txHash: string | null; issued: boolean; targetAmount: string; account: string }>(response);
   return data.txHash;
+}
+
+export async function preparePocTestFunds(): Promise<ApiPocFundingSetup> {
+  const response = await fetch("/api/poc/prepare-test-funds", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ ckbAmount: "500", usdwAmount: "1000" }),
+  });
+  return parseJson<ApiPocFundingSetup>(response);
 }
 
 export async function issueUsdw(recipientId: string, amount: string): Promise<string> {

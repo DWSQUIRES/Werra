@@ -65,6 +65,54 @@ const preparePocFundingSchema = z.object({
   usdwAmount: z.string().min(1).default("1000"),
 });
 
+const ckbResolutionRetryAttempts = 5;
+const ckbResolutionRetryDelayMs = 8_000;
+const ckbResolvePendingPattern = /TransactionFailedToResolve|Resolve failed|Unknown\(OutPoint/i;
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Unknown error";
+}
+
+function isCkbResolvePendingError(error: unknown) {
+  return ckbResolvePendingPattern.test(errorMessage(error));
+}
+
+function wait(ms: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function withCkbResolutionRetry<T>(label: string, action: () => Promise<T>) {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= ckbResolutionRetryAttempts; attempt += 1) {
+    try {
+      return await action();
+    } catch (error) {
+      lastError = error;
+
+      if (!isCkbResolvePendingError(error) || attempt === ckbResolutionRetryAttempts) {
+        break;
+      }
+
+      console.warn("CKB outpoint was not resolvable yet; retrying transaction", {
+        label,
+        attempt,
+        nextAttemptInMs: ckbResolutionRetryDelayMs,
+        error: errorMessage(error),
+      });
+      await wait(ckbResolutionRetryDelayMs);
+    }
+  }
+
+  if (isCkbResolvePendingError(lastError)) {
+    throw new Error(`${label} is still waiting for CKB to confirm the wallet cells. Wait about a minute, refresh, then try again.`);
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("Unknown CKB transaction error");
+}
+
 async function resolveUsdwIssuerWallet(data: Awaited<ReturnType<typeof readStore>>) {
   return (await getConfiguredFaucetWallet()) ?? requirePocUser(data, "issuer").wallet;
 }
@@ -146,22 +194,24 @@ async function fundDraftEscrow(agreementId: string, businessId: string) {
     throw new Error("Only the agreement SME can fund escrow");
   }
 
-  const txHash = await transferUsdw({
-    fromWallet: business.wallet,
-    issuerWallet,
-    outputs: [
-      {
-        wallet: escrowUser.wallet,
-        amountUnits: parseUsdwAmount(agreement.creatorPayoutUsdi.toFixed(2)),
-        capacityReserveShannons: usdwReleaseFeeReserveShannons,
-      },
-      {
-        wallet: escrowUser.wallet,
-        amountUnits: parseUsdwAmount(agreement.platformFeeUsdi.toFixed(2)),
-        capacityReserveShannons: usdwReleaseFeeReserveShannons,
-      },
-    ],
-  });
+  const txHash = await withCkbResolutionRetry("Escrow funding", () =>
+    transferUsdw({
+      fromWallet: business.wallet,
+      issuerWallet,
+      outputs: [
+        {
+          wallet: escrowUser.wallet,
+          amountUnits: parseUsdwAmount(agreement.creatorPayoutUsdi.toFixed(2)),
+          capacityReserveShannons: usdwReleaseFeeReserveShannons,
+        },
+        {
+          wallet: escrowUser.wallet,
+          amountUnits: parseUsdwAmount(agreement.platformFeeUsdi.toFixed(2)),
+          capacityReserveShannons: usdwReleaseFeeReserveShannons,
+        },
+      ],
+    }),
+  );
 
   let fundedAgreement = agreement;
   let fundedEscrow = escrow;
@@ -208,28 +258,30 @@ async function settleDispute(disputeId: string, input: z.infer<typeof settleDisp
     throw new Error("Agreement parties not found");
   }
 
-  const txHash = await transferUsdw({
-    fromWallet: escrowUser.wallet,
-    issuerWallet,
-    outputs:
-      input.decision === "release"
-        ? [
-            {
-              wallet: creator.wallet,
-              amountUnits: parseUsdwAmount(agreement.creatorPayoutUsdi.toFixed(2)),
-            },
-            {
-              wallet: issuerWallet,
-              amountUnits: parseUsdwAmount(agreement.platformFeeUsdi.toFixed(2)),
-            },
-          ]
-        : [
-            {
-              wallet: business.wallet,
-              amountUnits: parseUsdwAmount(agreement.grossUsdi.toFixed(2)),
-            },
-          ],
-  });
+  const txHash = await withCkbResolutionRetry("Dispute settlement", () =>
+    transferUsdw({
+      fromWallet: escrowUser.wallet,
+      issuerWallet,
+      outputs:
+        input.decision === "release"
+          ? [
+              {
+                wallet: creator.wallet,
+                amountUnits: parseUsdwAmount(agreement.creatorPayoutUsdi.toFixed(2)),
+              },
+              {
+                wallet: issuerWallet,
+                amountUnits: parseUsdwAmount(agreement.platformFeeUsdi.toFixed(2)),
+              },
+            ]
+          : [
+              {
+                wallet: business.wallet,
+                amountUnits: parseUsdwAmount(agreement.grossUsdi.toFixed(2)),
+              },
+            ],
+    }),
+  );
 
   const resolvedAt = new Date().toISOString();
   const resolution = input.decision === "release" ? "RELEASED" : "REFUNDED";
@@ -555,20 +607,22 @@ export function createApp() {
         throw new Error("Agreement creator not found");
       }
 
-      const txHash = await transferUsdw({
-        fromWallet: escrowUser.wallet,
-        issuerWallet,
-        outputs: [
-          {
-            wallet: creator.wallet,
-            amountUnits: parseUsdwAmount(agreement.creatorPayoutUsdi.toFixed(2)),
-          },
-          {
-            wallet: issuerWallet,
-            amountUnits: parseUsdwAmount(agreement.platformFeeUsdi.toFixed(2)),
-          },
-        ],
-      });
+      const txHash = await withCkbResolutionRetry("Escrow payout", () =>
+        transferUsdw({
+          fromWallet: escrowUser.wallet,
+          issuerWallet,
+          outputs: [
+            {
+              wallet: creator.wallet,
+              amountUnits: parseUsdwAmount(agreement.creatorPayoutUsdi.toFixed(2)),
+            },
+            {
+              wallet: issuerWallet,
+              amountUnits: parseUsdwAmount(agreement.platformFeeUsdi.toFixed(2)),
+            },
+          ],
+        }),
+      );
 
       await updateStore((current) => ({
         ...current,
@@ -630,8 +684,7 @@ export function createApp() {
   });
 
   app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    response.status(400).json({ error: message });
+    response.status(400).json({ error: errorMessage(error) });
   });
 
   return app;

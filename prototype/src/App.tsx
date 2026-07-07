@@ -126,12 +126,21 @@ function App() {
     }
   }
 
+  async function syncBalances() {
+    try {
+      await refresh({ loadBalances: true });
+    } catch (error) {
+      console.warn("Balance sync failed", error);
+    }
+  }
+
   async function boot() {
     try {
       setReady(false);
       await bootstrapPocWallets();
-      await refresh();
+      await refresh({ loadBalances: false });
       setNotice("");
+      void syncBalances();
     } catch (error) {
       setNotice(humanError(error));
     } finally {

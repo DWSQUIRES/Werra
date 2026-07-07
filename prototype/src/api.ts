@@ -154,11 +154,25 @@ const jsonHeaders = {
 };
 
 async function parseJson<T>(response: Response): Promise<T> {
-  const body = await response.json().catch(() => ({}));
+  const text = await response.text();
+  let body: unknown = {};
+
+  if (text) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = { error: text.slice(0, 180) };
+    }
+  }
 
   if (!response.ok) {
-    const message = typeof body?.error === "string" ? body.error : "Request failed";
+    const error = body && typeof body === "object" && "error" in body ? body.error : undefined;
+    const message = typeof error === "string" ? error : `Request failed with status ${response.status}`;
     throw new Error(message);
+  }
+
+  if (!body || typeof body !== "object") {
+    throw new Error("The API returned an invalid response.");
   }
 
   return body as T;

@@ -1,6 +1,7 @@
 {
   "name": "werra",
   "private": true,
+  "type": "module",
   "scripts": {
     "build": "npm --prefix prototype run build",
     "preview": "npm --prefix prototype run preview:poc",

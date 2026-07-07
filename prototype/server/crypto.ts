@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 
-import { config } from "./config";
+import { config } from "./config.js";
 
 const algorithm = "aes-256-gcm";
 

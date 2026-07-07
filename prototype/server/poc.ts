@@ -1,5 +1,5 @@
-import type { StoreData, User } from "./types";
-import { signupUser, toPublicUser } from "./users";
+import type { StoreData, User } from "./types.js";
+import { signupUser, toPublicUser } from "./users.js";
 
 export const pocAccounts = {
   business: {

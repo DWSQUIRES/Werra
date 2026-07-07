@@ -1,8 +1,8 @@
 import express from "express";
 import { z } from "zod";
 
-import { getWalletCkbBalance } from "./ckb";
-import { config } from "./config";
+import { getWalletCkbBalance } from "./ckb.js";
+import { config } from "./config.js";
 import {
   awardBid,
   createBid,
@@ -13,10 +13,10 @@ import {
   deliverySchema,
   disputeSchema,
   openDispute,
-} from "./marketplace";
-import { ensurePocWallets, listExistingPocWallets, requirePocUser } from "./poc";
-import { readStore, updateStore } from "./store";
-import { signupSchema, signupUser, toPublicUser } from "./users";
+} from "./marketplace.js";
+import { ensurePocWallets, listExistingPocWallets, requirePocUser } from "./poc.js";
+import { readStore, updateStore } from "./store.js";
+import { signupSchema, signupUser, toPublicUser } from "./users.js";
 import {
   getUsdwBalance,
   getUsdwTokenInfo,
@@ -24,7 +24,7 @@ import {
   parseUsdwAmount,
   transferUsdw,
   usdwReleaseFeeReserveShannons,
-} from "./usdw";
+} from "./usdw.js";
 
 const issueUsdwSchema = z.object({
   recipientId: z.string().min(1),

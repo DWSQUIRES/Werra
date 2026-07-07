@@ -1,9 +1,9 @@
 import crypto from "node:crypto";
 import { z } from "zod";
 
-import { canonicalJson, hashTerms } from "./agreement";
-import { updateStore } from "./store";
-import type { Agreement, Bid, Brief, Delivery, Dispute, Escrow, StoreData, User } from "./types";
+import { canonicalJson, hashTerms } from "./agreement.js";
+import { updateStore } from "./store.js";
+import type { Agreement, Bid, Brief, Delivery, Dispute, Escrow, StoreData, User } from "./types.js";
 
 export const createBriefSchema = z.object({
   businessId: z.string().min(1),

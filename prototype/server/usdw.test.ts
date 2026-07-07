@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { decodeUdtAmount, encodeUdtAmount, formatUsdwAmount, parseUsdwAmount } from "./usdw";
+import { decodeUdtAmount, encodeUdtAmount, formatUsdwAmount, parseUsdwAmount } from "./usdw.js";
 
 describe("USDW helpers", () => {
   it("parses and formats USDW amounts with six decimals", () => {

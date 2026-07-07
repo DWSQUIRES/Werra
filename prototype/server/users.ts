@@ -1,9 +1,9 @@
 import crypto from "node:crypto";
 import { z } from "zod";
 
-import { createManagedWallet, toPublicWallet } from "./ckb";
-import { updateStore } from "./store";
-import type { PublicUser, User, UserRole } from "./types";
+import { createManagedWallet, toPublicWallet } from "./ckb.js";
+import { updateStore } from "./store.js";
+import type { PublicUser, User, UserRole } from "./types.js";
 
 export const signupSchema = z.object({
   email: z.string().email().transform((value) => value.toLowerCase()),

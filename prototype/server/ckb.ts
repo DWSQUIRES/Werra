@@ -1,9 +1,9 @@
 import crypto from "node:crypto";
 import { ccc } from "@ckb-ccc/core";
 
-import { config } from "./config";
-import { encryptSecret } from "./crypto";
-import type { ManagedWallet } from "./types";
+import { config } from "./config.js";
+import { encryptSecret } from "./crypto.js";
+import type { ManagedWallet } from "./types.js";
 
 function buildClient() {
   if (config.chainNetwork === "testnet") {

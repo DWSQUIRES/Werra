@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { signupUser } from "./users";
+import { signupUser } from "./users.js";
 
 describe("managed wallet signup", () => {
   it("creates a public user with a CKB testnet wallet and no exposed private key", async () => {

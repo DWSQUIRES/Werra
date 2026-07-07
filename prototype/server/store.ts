@@ -2,8 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { neon } from "@neondatabase/serverless";
 
-import { config } from "./config";
-import type { StoreData } from "./types";
+import { config } from "./config.js";
+import type { StoreData } from "./types.js";
 
 const initialData: StoreData = {
   users: [],

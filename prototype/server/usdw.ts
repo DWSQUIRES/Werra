@@ -1,8 +1,8 @@
 import { ccc } from "@ckb-ccc/core";
 
-import { decryptSecret } from "./crypto";
-import { ckbClient } from "./ckb";
-import type { ManagedWallet } from "./types";
+import { decryptSecret } from "./crypto.js";
+import { ckbClient } from "./ckb.js";
+import type { ManagedWallet } from "./types.js";
 
 export const USDW = {
   symbol: "USDW",

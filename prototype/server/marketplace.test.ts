@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { awardBid, createBid, createBrief, createDelivery } from "./marketplace";
-import { readStore } from "./store";
-import { signupUser } from "./users";
+import { awardBid, createBid, createBrief, createDelivery } from "./marketplace.js";
+import { readStore } from "./store.js";
+import { signupUser } from "./users.js";
 
 describe("marketplace backend flow", () => {
   it("returns the existing open brief for duplicate submit retries", async () => {

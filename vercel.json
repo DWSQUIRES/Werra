@@ -4,7 +4,7 @@
   "buildCommand": "npm --prefix prototype run build",
   "outputDirectory": "prototype/dist",
   "functions": {
-    "api/[...path].ts": {
+    "api/**/*.ts": {
       "maxDuration": 60
     }
   },

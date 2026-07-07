@@ -34,7 +34,6 @@ import {
   releaseUsdwEscrow,
   signupManagedUser,
   submitApiDelivery,
-  TEST_CKB_TARGET,
   type ApiAgreement,
   type ApiBid,
   type ApiBrief,
@@ -288,10 +287,6 @@ function App() {
             >
               {copiedWalletId === currentUser.id ? <Check size={14} /> : <Copy size={14} />}
             </button>
-          </div>
-          <div className="wallet-row">
-            <span>Test target</span>
-            <strong>{TEST_CKB_TARGET} CKB</strong>
           </div>
         </div>
 

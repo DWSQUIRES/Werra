@@ -3,6 +3,7 @@ import {
   Check,
   CircleDollarSign,
   Clock3,
+  Copy,
   Gavel,
   HandCoins,
   LayoutDashboard,
@@ -24,6 +25,7 @@ import {
   createApiBid,
   createApiBrief,
   fundUsdwEscrow,
+  getCkbBalance,
   getManagedUsers,
   getMarketplace,
   getUsdwBalance,
@@ -32,9 +34,11 @@ import {
   releaseUsdwEscrow,
   signupManagedUser,
   submitApiDelivery,
+  TEST_CKB_TARGET,
   type ApiAgreement,
   type ApiBid,
   type ApiBrief,
+  type ApiCkbBalance,
   type ApiDelivery,
   type ApiEscrow,
   type ApiMarketplace,
@@ -85,11 +89,13 @@ function App() {
   const [users, setUsers] = useState<ApiUser[]>([]);
   const [market, setMarket] = useState<ApiMarketplace>(emptyMarket);
   const [balances, setBalances] = useState<Record<string, ApiUsdwBalance>>({});
+  const [ckbBalances, setCkbBalances] = useState<Record<string, ApiCkbBalance>>({});
   const [sessionEmail, setSessionEmail] = useState(() => localStorage.getItem(sessionKey) ?? "");
   const [view, setView] = useState<ViewKey>("overview");
   const [notice, setNotice] = useState("Preparing Werra workspace...");
   const [busy, setBusy] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
+  const [copiedWalletId, setCopiedWalletId] = useState<string | null>(null);
 
   const sessionUser = users.find((user) => user.email === sessionEmail);
   const currentUser: AppUser | undefined = sessionUser && isAppRole(sessionUser.role) ? sessionUser as AppUser : undefined;
@@ -106,9 +112,16 @@ function App() {
       const balanceUserId = options.balanceUserId ?? loadedUsers.find((user) => user.email === sessionEmail)?.id;
       const relevant = loadedUsers.filter((user) => user.id === balanceUserId);
       const entries = await Promise.all(
-        relevant.map(async (user) => [user.id, await getUsdwBalance(user.id)] as const),
+        relevant.map(async (user) => {
+          const [usdwBalance, ckbBalance] = await Promise.all([
+            getUsdwBalance(user.id),
+            getCkbBalance(user.id),
+          ]);
+          return [user.id, usdwBalance, ckbBalance] as const;
+        }),
       );
-      setBalances(Object.fromEntries(entries));
+      setBalances(Object.fromEntries(entries.map(([userId, usdwBalance]) => [userId, usdwBalance])));
+      setCkbBalances(Object.fromEntries(entries.map(([userId, _usdwBalance, ckbBalance]) => [userId, ckbBalance])));
     }
   }
 
@@ -183,6 +196,17 @@ function App() {
     setView("overview");
   }
 
+  async function copyWalletAddress(user: AppUser) {
+    try {
+      await navigator.clipboard.writeText(user.wallet.address);
+      setCopiedWalletId(user.id);
+      setNotice("CKB wallet address copied.");
+      window.setTimeout(() => setCopiedWalletId(null), 1500);
+    } catch {
+      setNotice("Could not copy automatically. Select the CKB wallet address and copy it manually.");
+    }
+  }
+
   async function runAction(label: string, action: () => Promise<void>) {
     try {
       setBusy(label);
@@ -213,6 +237,7 @@ function App() {
   const activeRole = currentUser.role;
   const nav = navFor(activeRole);
   const balance = balances[currentUser.id];
+  const ckbBalance = ckbBalances[currentUser.id];
 
   return (
     <div className="app-shell role-app">
@@ -242,12 +267,31 @@ function App() {
 
         <div className="wallet-panel">
           <div className="wallet-row">
-            <span>Available</span>
+            <span>USDW available</span>
             <strong>{balance ? `${balance.amount} USDW` : "Syncing"}</strong>
           </div>
           <div className="wallet-row">
-            <span>Account</span>
-            <strong>Managed</strong>
+            <span>CKB network</span>
+            <strong>{ckbBalance ? `${formatCkb(ckbBalance.capacityCkb)} CKB` : "Syncing"}</strong>
+          </div>
+          <div className="managed-wallet-row">
+            <div>
+              <span>CKB wallet</span>
+              <strong title={currentUser.wallet.address}>{shortAddress(currentUser.wallet.address)}</strong>
+            </div>
+            <button
+              className="mini-icon-button"
+              type="button"
+              title="Copy CKB wallet address"
+              aria-label="Copy CKB wallet address"
+              onClick={() => void copyWalletAddress(currentUser)}
+            >
+              {copiedWalletId === currentUser.id ? <Check size={14} /> : <Copy size={14} />}
+            </button>
+          </div>
+          <div className="wallet-row">
+            <span>Test target</span>
+            <strong>{TEST_CKB_TARGET} CKB</strong>
           </div>
         </div>
 
@@ -1221,6 +1265,17 @@ function displayName(user?: ApiUser) {
   return user.email.split("@")[0];
 }
 
+function shortAddress(address: string) {
+  if (address.length <= 18) return address;
+  return `${address.slice(0, 9)}...${address.slice(-7)}`;
+}
+
+function formatCkb(amount: string) {
+  const [whole, fraction = ""] = amount.split(".");
+  const trimmedFraction = fraction.slice(0, 2).replace(/0+$/, "");
+  return trimmedFraction ? `${whole}.${trimmedFraction}` : whole;
+}
+
 function isAppRole(role: ApiRole): role is SessionRole {
   return role === "business" || role === "creator";
 }
@@ -1228,10 +1283,10 @@ function isAppRole(role: ApiRole): role is SessionRole {
 function humanError(error: unknown) {
   const message = error instanceof Error ? error.message : "Something went wrong.";
   if (/Insufficient CKB/i.test(message)) {
-    return "A test funding wallet needs more network balance before this payment can be sent.";
+    return "This managed wallet needs more testnet CKB before the payment can be sent. Copy the CKB wallet address from the sidebar and top it up from the Nervos Pudge Faucet: https://faucet.nervos.org/.";
   }
   if (/gas sponsorship is not configured/i.test(message)) {
-    return "CKB gas sponsorship is not configured. Add a funded testnet sponsor wallet or fund the addresses manually.";
+    return "CKB gas sponsorship is not configured. Copy the CKB wallet address from the sidebar and top it up from the Nervos Pudge Faucet: https://faucet.nervos.org/.";
   }
   if (/Insufficient USDW|Insufficient coin/i.test(message)) {
     return "The SME needs more USDW before this escrow can be funded.";

@@ -128,6 +128,13 @@ export type ApiUsdwBalance = {
   checkedAt: string;
 };
 
+export type ApiCkbBalance = {
+  capacityShannons: string;
+  capacityCkb: string;
+  checkedAt: string;
+  network: string;
+};
+
 export type ApiUsdwToken = {
   symbol: "USDW";
   name: string;
@@ -160,6 +167,9 @@ export type CreateBidInput = Omit<ApiBid, "id" | "briefId" | "status" | "created
 const jsonHeaders = {
   "Content-Type": "application/json",
 };
+
+export const TEST_CKB_TARGET = "1500";
+export const TEST_USDW_TARGET = "1000";
 
 async function parseJson<T>(response: Response): Promise<T> {
   const text = await response.text();
@@ -260,11 +270,17 @@ export async function getUsdwBalance(userId: string): Promise<ApiUsdwBalance> {
   return data.balance;
 }
 
+export async function getCkbBalance(userId: string): Promise<ApiCkbBalance> {
+  const response = await fetch(`/api/users/${userId}/ckb-balance`);
+  const data = await parseJson<{ balance: ApiCkbBalance }>(response);
+  return data.balance;
+}
+
 export async function preparePocTestFunds(userId: string): Promise<ApiPocFundingSetup> {
   const response = await fetch("/api/poc/prepare-test-funds", {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ userId, ckbAmount: "500", usdwAmount: "1000" }),
+    body: JSON.stringify({ userId, ckbAmount: TEST_CKB_TARGET, usdwAmount: TEST_USDW_TARGET }),
   });
   return parseJson<ApiPocFundingSetup>(response);
 }

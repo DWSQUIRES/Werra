@@ -13,13 +13,26 @@ async function signIn(page: Page, role: "business" | "creator", email: string) {
       await route.fulfill({
         status: 201,
         json: {
-          ckb: { txHash: "0xckb", fundedWallets: 2, targetAmount: "500" },
+          ckb: { txHash: "0xckb", fundedWallets: 2, targetAmount: "1500" },
           usdw: [{ userId: body.userId, txHash: "0xusdw", issued: true, issuedAmount: "1000", targetAmount: "1000" }],
         },
       });
     },
     { times: 1 },
   );
+
+  await page.route("**/api/users/*/ckb-balance", async (route) => {
+    await route.fulfill({
+      json: {
+        balance: {
+          capacityShannons: "150000000000",
+          capacityCkb: "1500",
+          checkedAt: "2026-07-03T00:00:00.000Z",
+          network: "testnet",
+        },
+      },
+    });
+  });
 
   await page.getByLabel("Email").fill(email);
   await page.getByRole("button", { name: role === "business" ? /SME/ : /Creator/ }).click();
@@ -41,6 +54,8 @@ test("email sign-in creates a managed user and prepares that user's test wallet"
   const preparedUserId = await signIn(page, "business", email);
 
   await expect(page.getByText(email)).toBeVisible();
+  await expect(page.getByText("CKB wallet")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Copy CKB wallet address" })).toBeVisible();
   expect(preparedUserId).toMatch(/^usr_/);
 });
 
@@ -173,6 +188,18 @@ test("creator can submit completed work for a funded job", async ({ page }) => {
           amountUnits: "99000000",
           amount: "99",
           checkedAt: "2026-07-03T00:00:00.000Z",
+        },
+      },
+    });
+  });
+  await page.route("**/api/users/*/ckb-balance", async (route) => {
+    await route.fulfill({
+      json: {
+        balance: {
+          capacityShannons: "150000000000",
+          capacityCkb: "1500",
+          checkedAt: "2026-07-03T00:00:00.000Z",
+          network: "testnet",
         },
       },
     });

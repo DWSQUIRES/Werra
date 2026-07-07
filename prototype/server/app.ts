@@ -61,7 +61,7 @@ const settleDisputeSchema = z.object({
 
 const preparePocFundingSchema = z.object({
   userId: z.string().min(1),
-  ckbAmount: z.string().min(1).default("500"),
+  ckbAmount: z.string().min(1).default("1500"),
   usdwAmount: z.string().min(1).default("1000"),
 });
 
@@ -389,7 +389,7 @@ export function createApp() {
       response.json({
         ckbGasSponsor: await getCkbFaucetStatus(),
         recommended: {
-          ckbPerWallet: "500",
+          ckbPerWallet: "1500",
           smeUsdw: "1000",
           creatorUsdw: "1000",
         },

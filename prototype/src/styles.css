@@ -220,6 +220,25 @@ nav {
   white-space: nowrap;
 }
 
+.mini-icon-button {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--ink);
+  padding: 0;
+}
+
+.mini-icon-button:hover {
+  border-color: var(--brand);
+  color: var(--brand-strong);
+}
+
 .wallet-message {
   color: var(--muted);
   font-size: 12px;
